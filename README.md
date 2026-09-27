@@ -6,7 +6,9 @@ The design emphasizes global processing and specialized boards for dedicated tas
 
 ARC is designed for evolving and temporary layouts, with plug-and-play operation as a guiding goal. Common capabilities are available throughout the system, so changing the track plan can be an ordinary part of using the railroad. That flexibility goes hand in hand with intelligent control: the computer can use its knowledge of track connections and turnout positions to prepare the hardware for a route.
 
-This repository contains ARC's hardware designs in KDL and the corresponding KiCad projects. The architecture and intended system behavior are described below; individual board READMEs cover their roles and design decisions.
+This repository contains ARC's schematics written in [Stackup](https://github.com/stackup-eda/stackup) and the corresponding KiCad PCB projects. Stackup is another of my projects: a declarative language and toolchain for describing electronic circuits as text. It expresses parts, reusable circuits, connections, and design constraints, checks them together, and exports the result for KiCad. Stackup uses KDL as its file syntax, which is why the schematic sources have a `.kdl` extension.
+
+The architecture and intended system behavior are described below; individual board READMEs cover their roles and design decisions.
 
 ## Three levels of control
 
@@ -104,9 +106,9 @@ The Kato turntable controller is another example of this intended behavior. As t
 
 ## Working with the designs
 
-The boards are composed from reusable KDL circuits in [`shared/`](shared/). Each board directory keeps its `board.kdl`, supporting KDL files, functional README, and KiCad PCB project together.
+The boards are composed from reusable Stackup circuits in [`shared/`](shared/). Each board directory keeps its `board.kdl`, supporting Stackup sources, functional README, and KiCad PCB project together.
 
-The KDL imports use the [stackup parts library](https://github.com/stackup-eda/library), pinned in `manifest.kdl`. For local development, add a `manifest.local.kdl` with a path to a parts checkout:
+The designs import the [Stackup parts library](https://github.com/stackup-eda/library), pinned in `manifest.kdl`. For local development, add a `manifest.local.kdl` with a path to a parts checkout:
 
 ```kdl
 library stackup path="../stackup-parts"
@@ -114,7 +116,7 @@ library stackup path="../stackup-parts"
 
 Run `stackup check backbone/psu-01/board.kdl` to validate a board. Substitute any other board's `board.kdl` path as needed. Use `--locked` to check against the pinned library commit. Without a local override, the CLI fetches Git libraries into `.stackup/cache/` beside `manifest.kdl`.
 
-Each KiCad PCB has a `.stackup_sch` sidecar pointing to the adjacent `board.kdl`. To sync a closed board with the stackup KDL KiCad plugin, using KiCad's bundled Python (`STACKUP_KDL` is the path to that worktree):
+Each KiCad PCB has a `.stackup_sch` sidecar pointing to the adjacent `board.kdl`. To sync a closed board with the Stackup KiCad plugin, using KiCad's bundled Python (`STACKUP_KDL` is the path to the Stackup worktree):
 
 ```sh
 /Applications/KiCad/KiCad.app/Contents/Frameworks/Python.framework/Versions/3.9/bin/python3 \
@@ -122,4 +124,4 @@ Each KiCad PCB has a `.stackup_sch` sidecar pointing to the adjacent `board.kdl`
   backbone/term-01/term-01.kicad_pcb
 ```
 
-The PCB layouts retain their routed copper and KiCad project settings. Some newer KDL parts on the district and yard boards still need placement and routing. A KDL check or PCB sync is not a DRC or fabrication signoff. The antenna board retains an older footprint table as `fp-lib-table.legacy` for reference; KiCad uses its existing `fp-lib-table`.
+The PCB layouts retain their routed copper and KiCad project settings. Some newer parts in the district and yard schematics still need placement and routing. A Stackup check or PCB sync is not a DRC or fabrication signoff. The antenna board retains an older footprint table as `fp-lib-table.legacy` for reference; KiCad uses its existing `fp-lib-table`.
