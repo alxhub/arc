@@ -1,0 +1,48 @@
+services:
+  bus:
+    image: python:3.12-alpine
+    working_dir: /app
+    volumes:
+      - ./:/app/sim:ro
+    command: ["python", "-m", "sim.canlab.bus", "--host", "0.0.0.0"]
+    ports:
+      - "127.0.0.1:17500:17500"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1', 17500), 1).close()"]
+      interval: 2s
+      timeout: 2s
+      retries: 10
+
+  node_a:
+    build:
+      context: ..
+      dockerfile: sim/Dockerfile.dst-host
+      args:
+        REV: rev1
+    command: ["--bus", "bus:17500", "--name", "node_a", "--uid", "000102030405060708090a0b", "--mode", "synced", "--source-ready", "true"]
+    depends_on:
+      bus:
+        condition: service_healthy
+
+  node_b:
+    build:
+      context: ..
+      dockerfile: sim/Dockerfile.dst-host
+      args:
+        REV: rev2
+    command: ["--bus", "bus:17500", "--name", "node_b", "--uid", "101112131415161718191a1b", "--mode", "synced", "--source-ready", "true", "--fault-mask", "1"]
+    depends_on:
+      bus:
+        condition: service_healthy
+
+  node_collision:
+    profiles: ["collision"]
+    build:
+      context: ..
+      dockerfile: sim/Dockerfile.dst-host
+      args:
+        REV: rev2
+    command: ["--bus", "bus:17500", "--name", "node_collision", "--uid", "202122232425262728292a2b", "--network-id", "fa5138"]
+    depends_on:
+      bus:
+        condition: service_healthy

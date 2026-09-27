@@ -1,0 +1,9 @@
+FROM rust:1.96-bookworm AS build
+ARG REV
+WORKDIR /src
+COPY firmware ./firmware
+RUN cd firmware && cargo build --release -p dst-01 --bin dst-01-host --features x4,host,${REV}
+
+FROM debian:bookworm-slim
+COPY --from=build /src/firmware/target/release/dst-01-host /usr/local/bin/dst-01-host
+ENTRYPOINT ["dst-01-host"]

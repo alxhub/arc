@@ -8,7 +8,7 @@ ARC is designed for evolving and temporary layouts, with plug-and-play operation
 
 This repository contains ARC's schematics written in [Stackup](https://github.com/stackup-eda/stackup) and the corresponding KiCad PCB projects. Stackup is another of my projects: a declarative language and toolchain for describing electronic circuits as text. It expresses parts, reusable circuits, connections, and design constraints, checks them together, and exports the result for KiCad. Stackup uses KDL as its file syntax, which is why the schematic sources have a `.kdl` extension.
 
-The architecture and intended system behavior are described below; individual board READMEs cover their roles and design decisions.
+The architecture and intended system behavior are described below; individual board READMEs cover their roles and design decisions. [Control architecture](CONTROL.md) describes the administrative, operations, control, and field planes, including district policy and PSU authority on loss of communication. [ARC CAN protocol](PROTOCOL.md) defines the wire format and node identity scheme.
 
 ## Three levels of control
 
@@ -103,6 +103,23 @@ The Kato turntable controller is another example of this intended behavior. As t
 | [ARC-TRK-ANT-01](trackside/trk-ant-01/README.md) | Provides the reader's flexible track antenna. |
 | [ARC-TRK-TRN-01](trackside/trk-trn-01/README.md) | Operates four turnout machines. |
 | [ARC-TRK-TBL-01xK](trackside/trk-tbl-01xK/README.md) | Operates a Kato turntable. |
+
+## Firmware
+
+The [Rust firmware workspace](firmware/README.md) uses Embassy. It contains the
+shared ARC-Link protocol crate at `firmware/shared/link` and the `dst-01` board
+crate, initially targeting the x4 variant with separate rev1 and rev2 features.
+
+## Layout software
+
+The first host-side service is [layoutd](services/layoutd/README.md). It owns
+retained MQTT facts about track nodes, derives and checks the layout graph
+against observed CAN node identities, and publishes overall status. Its CAN
+interface has a file-based simulator for
+development and tests.
+
+The [virtual CAN lab](sim/README.md) builds the DST-01x4 firmware crate as host
+binaries for both board revisions and connects them over a simulated CAN bus.
 
 ## Working with the designs
 

@@ -1,0 +1,5 @@
+**
+!firmware
+!firmware/**
+firmware/target
+firmware/target/**
