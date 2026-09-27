@@ -1,0 +1,38 @@
+// One monitor and reference for eight districts, two reservoirs at the two rows.
+use "@stackup/passives"
+use "@stackup/mechanical"
+use "@stackup/sensor/current/ina226"
+
+block district-rail {
+    port vpwr type=power
+    port logic type=power
+    port vtrk type=power {
+        set net.voltage min="12V" max="18V"
+        line rail { set net.name "VTRK" }
+        line gnd
+    }
+    port i2c type=i2c
+    port alert
+    port vref
+
+    // 3 mΩ keeps the 20 A combined fault current in the INA226's 81.92 mV span.
+    // Source a 1%, 2 W metal alloy shunt; KDL cannot enforce tolerance or rating.
+    place ina226-sense monitor shunt="3mΩ" vs=logic i2c=i2c alert=alert designator=MON
+    circuit vpwr.rail monitor vtrk.rail
+    circuit vpwr.gnd vtrk.gnd
+    // Two 100 µF low ESR polymer cans in 8 x 11.9 mm bodies, one per row.
+    place bulk res0 node=vtrk.rail rail=vtrk value="100µF" footprint="Capacitor_SMD:CP_Elec_8x11.9"
+    place bulk res1 node=vtrk.rail rail=vtrk value="100µF" footprint="Capacitor_SMD:CP_Elec_8x11.9"
+    place bypass hf0 node=vtrk.rail rail=vtrk value="100nF"
+    place bypass hf1 node=vtrk.rail rail=vtrk value="100nF"
+    place test-point tp-vtrk at=vtrk.rail package=pad designator=VTRK
+
+    place resistor Rvref-top value="9.76kΩ" intent=divider
+    place resistor Rvref-bottom value="30kΩ" intent=divider
+    circuit logic.rail Rvref-top.a
+    circuit Rvref-top.b Rvref-bottom.a vref name="VREF"
+    circuit Rvref-bottom.b logic.gnd
+    place bypass Cvref0 node=vref rail=logic value="100nF"
+    place bypass Cvref1 node=vref rail=logic value="100nF"
+    place test-point tp-vref at=vref package=pad designator=VREF
+}

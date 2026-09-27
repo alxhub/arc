@@ -1,0 +1,414 @@
+// ARC-TRK-HUB-01: the track-side hub. Three LIN legs on one CAN node: a leg is a run of flat
+// modular cord along the track to the signal and gate nodes on that stretch, and the hub is where
+// three of them meet the backbone. An STM32G0B1 schedules all three, switches each on and off on
+// its own, reports the bus rail, and carries one Qwiic port for whatever the hub itself should
+// sense.
+//
+// Ported from arc's `board::trk_hub_01`. Every statement is a join; the why of each is beside it,
+// and the README's arguments are kept where they bear on a statement.
+//
+// What the port is testing, beyond the sheets it places:
+//
+// - **One supply, unregulated, and two rails made from it.** VPWR is the DC input and it is also
+//   the LIN bus rail — nothing converts it, because a LIN receiver measures the bus against its
+//   own supply. The logic brick takes it before the shunt; the legs and the pixel brick take it
+//   past the shunt, under its own name, so the monitor reads what leaves for the cables and never
+//   the board's housekeeping.
+// - **Three placements of one sheet, joined by contract.** Each leg is `lin-master` placed
+//   again, its UART a `connect` whose answer is checked against the die's LIN-capable instances,
+//   its enable a `connect` to a plain GPIO. Nothing on a leg names which leg it is.
+// - **An isolated section, and a fact crossing it.** The link sheet's island is the cable's,
+//   reachable from this board only through the isolator and an optocoupler, and the board's
+//   ground never meets the star's.
+// - **Every MCU link is a `connect`, and every answer is here** — twenty-three of sixty port
+//   pins, each written beside the contract it answers; the other thirty-seven are declared spare.
+
+use "@stackup/passives"
+use "@stackup/connector/qwiic"
+use "@stackup/connector/swd"
+use "@stackup/types"
+use "@stackup/mechanical"
+use "@stackup/micro/stm32g0b1"
+use "@stackup/power/brick/r78k"
+use "@stackup/power/brick/r78e"
+use "@stackup/clock/ecs2520mv"
+use "@stackup/discrete/led/led"
+use "@stackup/discrete/diode/tvs"
+use "@stackup/sensor/current/ina226"
+use "../../shared/connectors.kdl"
+use "../../shared/arc-link.kdl"
+use "../../shared/lin-master.kdl"
+use "../../shared/usb.kdl"
+
+// The board's power entry and its one measurement: the DC terminal behind its clamp and bulk,
+// VPWR as the terminal brings it, and VLIN — VPWR past the monitor's shunt, the rail everything
+// that goes down a cable is fed from. The hub's counterpart of psu-01's `rail` sheet with the
+// switch left out: this node energises nothing deliberately, it only measures what leaves.
+block rail {
+    // The 3.3 V the monitor runs off — what the block demands from the board.
+    port logic type=power
+
+    // The layout's track-family supply, arriving directly: BACKBONE_V, 12–18 V — the N-scale
+    // setting less a cable allowance at the bottom, the supply's trim above the HO setting at
+    // the top. Everything on it clears the window with room: the transceivers want 5–27 V and
+    // the R-78K wants 4.5 V. It is also the LIN bus rail, because a LIN receiver measures the bus
+    // against its own supply and every node along a leg has to see the rail this hub sees. There
+    // is no 12 V here: 12 V is only LIN's automotive nominal.
+    port vpwr type=power {
+        set net.voltage min="12V" max="18V"
+        line rail { set net.name "VPWR" }
+        line gnd { set net.name "GND" }
+    }
+
+    // The rail the legs are switched from: VPWR past the shunt, the same window under its own
+    // name, so the leg sheets' demand reads as what it is — the measured rail.
+    port vlin type=power {
+        set net.voltage min="12V" max="18V"
+        line rail { set net.name "VLIN" }
+    }
+
+    // The monitor's bus, and its open-drain alert for the host's interrupt.
+    port i2c type=i2c
+    port alert
+
+    // --- The DC leg: terminal block, transient clamp, bulk ------------------------------------
+    scope dc {
+        // The same screw block every field-powered board takes. VRAIL on the silk: an installer
+        // wiring a supply reads the board, not the schematic.
+        place dc-input in designator=VRAIL \
+            note="DC input — the layout's track-family supply, trimmed to land 13 V for N or 16 V for HO on the rail, and its return"
+        circuit in.VDC vpwr.rail
+        circuit in.GND vpwr.gnd
+
+        // The bulk reservoir at the input — the entry bank a field-wired terminal owes whatever
+        // is behind it, in the same can and on the same BOM line as the track driver's. Three
+        // soft-started legs draw from it in turn, never at once, so the bank is not sized for
+        // them. 47 µF at the rail's 50 V rung is a 6.3 × 7.7 mm body.
+        place bulk Cbulk node=vpwr.rail rail=vpwr value="47µF" footprint="Capacitor_SMD:CP_Elec_6.3x7.7" \
+            note="the entry bank — a field-wired terminal owes it to whatever is behind it"
+
+        // The surge clamp: an 18 V standoff, at the rail's ceiling — it stands off everything
+        // the supply's dial can be set to and conducts on nothing short of a surge — the same
+        // part and the same argument as every other field-powered board. It is the whole of this
+        // input's protection, and it is not reverse polarity; a reversed supply is the
+        // installer's mistake to avoid.
+        place tvs clamp value="SMBJ18A" note="SMBJ18A transient clamp — the input's whole overvoltage story"
+        circuit vpwr.rail clamp vpwr.gnd
+    }
+
+    // --- The bus monitor ----------------------------------------------------------------------
+    //
+    // An INA226 across a 20 mΩ shunt, in the one path from the entry to everything that leaves
+    // for the legs: the three leg switches and the pixel brick hang on the far side of it, the
+    // logic brick on the near side. So what it reads is what the hub sends down the cables, both
+    // rails counted as watts off VPWR, and never its own housekeeping. Its bus-voltage register
+    // reads the rail on the leg side — and that register *is* the hub's rail reading: the shunt
+    // drops 80 mV at full scale, so the number is the supply's to a fraction of a percent, and no
+    // divider into an ADC channel would say it better. Its alert is a threshold on the shunt
+    // voltage, so a leg that shorts is an interrupt rather than a reading firmware got round to.
+    //
+    // One monitor rather than three: which leg is drawing is answered by switching, since the
+    // enables are firmware's and a reading before and after says whose the current was.
+    //
+    // 20 mΩ, sized for readings rather than for faults. Full scale is what the INA226's
+    // ±81.92 mV span makes of it: 4.1 A, which is the hub's budget for what leaves it. A leg is
+    // allowed 1 A — generous for a run of signal heads, honest about a crossing-gate node with
+    // servos behind its own buck, and inside what a 6P4C cord's conductors carry — and three of
+    // those plus the pixel brick's draw is inside the span with a leg's worth to spare. 20 mV at
+    // 1 A, 125 µA a step, the part's offset half a milliamp. A shorted cable with a 5 A supply in
+    // current limit puts 0.5 W in it, half a 2512's rating. 1 % is the whole accuracy of every
+    // current this hub reports, and it is where the part is: nothing here is a meter.
+    place ina226-sense monitor shunt="20mΩ" vs=logic i2c=i2c alert=alert designator=MON
+    circuit vpwr.rail monitor vlin.rail
+    circuit vlin.gnd vpwr.gnd
+    circuit logic.gnd vpwr.gnd
+}
+
+design trk-hub-01 {
+    stock {
+        packages imperial="0402"
+        derating voltages="16V 25V 50V"
+        tracks "0.2mm 0.25mm 0.3mm 0.4mm 0.8mm 1.0mm 2.0mm"
+    }
+
+    // --- The power tree ------------------------------------------------------------------------
+    //
+    // The rail block owns the DC terminal and provides VPWR, unswitched, and VLIN past the
+    // monitor's shunt. The logic chain is off VPWR — *before* the shunt, so the MCU's own draw is
+    // never in the reading — and it is the shared R-78K sheet, the same brick and input filter the
+    // districts and the supply node carry, making 3.3 V straight from VPWR: off the unswitched
+    // rail, so the MCU is alive to decide about the legs rather than powered by any of them.
+    // 3V3_BUCK on the silk, for the rail it makes.
+    place rail rail
+    place r78k3v3 logic in=rail.vpwr designator="3V3_BUCK" {
+        with emc-class-b
+    }
+    connect power from=logic.out to=rail.logic
+    set logic.out.rail net.name "3V3"
+
+    // A pilot on the measured rail: the one thing on the board that says the legs' rail is up
+    // before any leg is switched onto it — and, with the 5 V pilot beside it, that the shunt is
+    // intact, since a lamp past an open shunt is a dark lamp on a live input. It costs the
+    // monitor a constant 2 mA, about sixteen counts, that is nobody's leg. Sized at the floor —
+    // 5.1 kΩ is (12 V − 2 V) / 2 mA on E24 — it rises to ~3 mA at the ceiling, and 50 mW at the
+    // top of the window is 80 % of an 0402: the Rust board gave the ballast an 0805, which the
+    // indicator block cannot be told. PWR on the silk.
+    place indicator vlin-led rail=rail.vlin r="5.1kΩ" limit="4mA" resistor-body="Resistor_SMD:R_0805_2012Metric" designator=PWR \
+        note="the bus-rail pilot, past the shunt — dark on a live input is an open shunt"
+
+    // The pixel rail: an R-78E on the measured rail making the 5 V every leg carries on its third
+    // contact, into the legs' second switches — behind the shunt, because that rail exists for
+    // the legs and its watts are the legs' watts. Regulated once here rather than at every node,
+    // because what it feeds is a handful of pixels per node on a leg a few metres long, tens of
+    // milliamps that a flat cord drops a tenth of a volt on. A node that wanted amps at 5 V would
+    // be asking the wrong rail. The 0.5 A member: a leg's pixels are tens of milliamps, and the
+    // brick's 10 mA minimum load is the pilot lamp, which is also the one thing on the board that
+    // says the 5 V is up when no leg is — 300 Ω is (5 V − 2 V) / 10 mA. 5V_BUCK and 5V on the
+    // silk.
+    place r78e5v0-0a5 v5 in=rail.vlin designator="5V_BUCK" {
+        with emc-class-b
+    }
+    set v5.out.rail net.name "V5"
+    place indicator v5-led rail=v5.out r="300Ω" limit="12mA" designator="5V" \
+        note="the pixel rail's pilot, and the brick's 10 mA minimum load"
+
+    // --- The legs ------------------------------------------------------------------------------
+    //
+    // Three placements of one sheet: the measured rail into each leg's switch, the 5 V into each
+    // second switch, the 3.3 V to each host side — the transceiver's enable and the RxD pull-up.
+    // Leg 0's rail is leg 0's switch's drain and no one else's; the three share nothing past the
+    // terminal block.
+    place lin-master leg0 vpwr=rail.vlin v5=v5.out logic=logic.out
+    place lin-master leg1 vpwr=rail.vlin v5=v5.out logic=logic.out
+    place lin-master leg2 vpwr=rail.vlin v5=v5.out logic=logic.out
+
+    // --- The backbone ---------------------------------------------------------------------------
+    //
+    // Two RJ45 jacks rather than the six-way block, for the reason the track driver takes them:
+    // this node lives in a run under the layout, and the second jack is what lets the run chain.
+    // And no RS-485 isolator: nothing on this board is DCC, so the sync pair is tied through the
+    // two jacks for the nodes beyond and crosses nothing here. The flag stays, because PC1 reads
+    // it. What the sheet demands from the board is the barrier's host side, on the logic rail
+    // with everything else.
+    place arc-link link host=logic.out {
+        with jacks
+    }
+
+    // --- The service port ---------------------------------------------------------------------
+    //
+    // A USB-C port for the ROM's DFU and nothing else: an empty part boots its bootloader, so the
+    // receptacle programs a virgin board with no probe on it, and a provisioned one gets there by
+    // being asked over the same link. It costs no USART — the G0B1's USB is its own peripheral —
+    // which is why a die whose three LIN-capable instances are all legs still has one. The sheet
+    // is arc's data-only port: Rd on both CC pins so a source applies VBUS at all, the ESD array
+    // on the data pair, and no leg onto VPWR — nor the surge clamp that guards one. This node is
+    // powered from the layout's supply or it is not powered, and a service-power path it does not
+    // have is a path nobody has to reason about when a laptop and a live bus meet.
+    //
+    // The one thing the port shares with the power tree is its return, bonded to the board's at
+    // the DC input so the data pair is referenced the same at both ends. With no feed there is no
+    // second join, so this one wire is the whole of it.
+    place usb-port usb
+    circuit usb.vbus.gnd rail.vpwr.gnd
+    set usb.vbus.rail net.name "VBUS"
+
+    // --- The MCU and its reference ------------------------------------------------------------
+    //
+    // A G0B1 in the LQFP-64, chosen for its leads rather than its pin count: sixty port pins of
+    // which twenty-three are spent. The part brings its own supply circuit — decoupling, the
+    // reservoir, the reset filter, VBAT tied to the rail, VREF+ referenced to it. STM32 on the
+    // silk, whole: it is what a debugger is pointed at.
+    //
+    // A 40 MHz external reference, driven into OSC_IN — the same 40 MHz every G0B1 CAN node on
+    // the backbone runs, for the same reason: a data phase's oscillator-tolerance budget is a few
+    // tenths of a percent, and the G0's internal RC is ±1 % over temperature. The LIN legs ride on
+    // it for free — a LIN master's clock has to hold ±0.5 % and this holds 25 ppm. HSE bypass: the
+    // oscillator drives OSC_IN and OSC_OUT carries nothing; a crystal would need it.
+    place stm32g0b1 mcu vdd=logic.out package=lqfp64 designator=STM32
+    place ecs2520mv osc vdd=logic.out value="40MHz" \
+        note="the 40 MHz reference — CAN FD's data-phase budget is tighter than the HSI's ±1 %"
+    circuit osc.out mcu.PF0
+    set osc.out net.name "hse"
+    nc mcu.PF1 note="HSE bypass — the oscillator drives OSC_IN on PF0, so OSC_OUT is unused; a crystal would need it"
+
+    // --- What the MCU's pins are spent on ------------------------------------------------------
+
+    // The three leg UARTs, each checked against the die — both pins on one USART, and that
+    // USART with LIN mode, which the leg's port requires. **Which instances they are is the one
+    // real decision**, and it is also why there are three: the G0B1 has LIN mode on USART1–USART3
+    // and nowhere else, so every leg is a hardware master and there is no fourth. The pairs are
+    // the ones that resolve to those instances cleanly — PA2/PA3 would have been USART2 on a
+    // neater edge, but the die also offers that pair to LPUART1, which has no LIN mode, so leg 2
+    // goes to PD5/PD6 on the top edge, which are USART2 and nothing else. The nets are named from
+    // the MCU's end: `leg0/txd` is the line the MCU transmits on.
+    //
+    // The enables: plain GPIO, high to put the rail on that leg's cable. Leg 0's is PA7 at pad
+    // 24, immediately before its UART pair at 25 and 26, so that leg's three lines leave the
+    // package together; leg 1's is PB12 at 32, following its pair where the right edge begins;
+    // leg 2's is PB15 at 35, immediately after the expansion port's pair.
+    connect uart {
+        from mcu tx=PC4 rx=PC5
+        to leg0
+    }
+    connect output from=mcu.PA7 to=leg0.enable
+    set leg0.uart.rx net.name "leg0/txd"
+    set leg0.uart.tx net.name "leg0/rxd"
+    set leg0.enable net.name "leg0/EN"
+
+    connect uart {
+        from mcu tx=PB10 rx=PB11
+        to leg1
+    }
+    connect output from=mcu.PB12 to=leg1.enable
+    set leg1.uart.rx net.name "leg1/txd"
+    set leg1.uart.tx net.name "leg1/rxd"
+    set leg1.enable net.name "leg1/EN"
+
+    connect uart {
+        from mcu tx=PD5 rx=PD6
+        to leg2
+    }
+    connect output from=mcu.PB15 to=leg2.enable
+    set leg2.uart.rx net.name "leg2/txd"
+    set leg2.uart.tx net.name "leg2/rxd"
+    set leg2.enable net.name "leg2/EN"
+
+    // CAN FD, on-die, on FDCAN2 at PC2/PC3 — pads 15 and 16 on the left edge, the one CAN pair
+    // the die offers below pad 24, and the instance follows from the pins: the other cores'
+    // PB8/PB9 is FDCAN1 at the top-right corner, and this board's isolator column sits on the
+    // left. The two instances are the same peripheral behind the same message RAM, so the choice
+    // costs firmware an instance number and nothing else. A bus, so it cannot transpose. The
+    // backbone-good flag lands on PC1 at pad 14, immediately before the CAN pair, so the whole of
+    // what the backbone lands on this die is three pads in a row.
+    connect can {
+        from mcu rx=PC2 tx=PC3
+        to link
+    }
+    set link.fdcan.tx net.name "can/txd"
+    set link.fdcan.rx net.name "can/rxd"
+    circuit link.link-good mcu.PC1
+    set link.link-good net.name "link/good"
+
+    // The bus monitor's I²C, and its alert. PB6/PB7 is I2C1 on AF6, the pair the track driver's
+    // core gives the same job — the pair firmware knows. PB5 at pad 59 sits immediately below the
+    // pair at 60 and 61, so the monitor's bus and its interrupt leave the package together. The
+    // pull-ups are the board's, on the logic rail the monitor runs from.
+    place i2c-pull-ups mon-pulls rail=logic.out
+    connect i2c {
+        from mcu sda=PB7 scl=PB6
+        to rail.i2c
+    }
+    connect i2c from=rail.i2c to=mon-pulls
+    set mon-pulls.i2c.sda net.name "monitor/sda"
+    set mon-pulls.i2c.scl net.name "monitor/scl"
+    circuit rail.alert mcu.PB5
+    set rail.alert net.name "nALERT"
+
+    // --- The expansion port: I²C on Qwiic ---------------------------------------------------
+    //
+    // The port the signal node carries, and it is the thing on this board that is not a leg: an
+    // occupancy sensor at the hub, an expander, whatever a stretch of track wants that is not
+    // worth a node on a cord. I2C2 on PB13/PB14, pads 33 and 34, where the right edge begins —
+    // I2C2 because the monitor holds I2C1.
+    //
+    // On the brick's 3.3 V, and unswitched. The signal node gives its port a regulator of its own
+    // because its 3.3 V comes from a SOIC-8 dropping the whole bus rail, where a port would cost
+    // 14 mW a milliamp; this board's 3.3 V is a switcher with hundreds of milliamps to spare, and
+    // a second 3.3 V made from the 5 V the legs' pixels are owed would only turn that rail's
+    // watts into heat. The pull-ups are the bus's own, on the same rail.
+    //
+    // A reservoir at the connector, because an accessory plugged in live charges its input
+    // capacitance from whatever is nearest — the brick's output bank is across the board from
+    // the port. A ceramic rather than the board's bulk can: 10 µF on a 3.3 V rail is the signal
+    // node's answer for the same port, and a can here would be a body for nothing. I2C on the
+    // silk.
+    scope expansion {
+        place bulk Cbulk node=logic.out.rail rail=logic.out value="10µF" \
+            note="port reservoir — an accessory plugged in live charges its input capacitance from here rather than across the board from the brick"
+        place i2c-pull-ups pulls rail=logic.out
+        place qwiic port vcc=logic.out designator=I2C \
+            note="Qwiic — the hub's own expansion port, on the logic rail"
+        connect i2c {
+            from mcu sda=PB14 scl=PB13
+            to port
+        }
+        connect i2c from=port to=pulls
+        set pulls.i2c.sda net.name "sda"
+        set pulls.i2c.scl net.name "scl"
+    }
+
+    // --- Debug, and reset ------------------------------------------------------------------
+    //
+    // SWD on its dedicated pair, plus reset — the bench's, not the field's: the field programs
+    // this board over the receptacle's DFU. RESET on the header is what makes attach-under-reset
+    // possible, and the part's own reset filter is on the same node. VTREF senses the 3.3 V this
+    // board's brick makes, so a probe matches its levels without being told what they are.
+    place swd-header swd vref=logic.out designator=SWD
+    connect swd {
+        from mcu swdio=PA13 swclk=PA14 nrst=PF2
+        to swd
+    }
+    set swd.swd.swdio net.name "swd/swdio"
+    set swd.swd.swclk net.name "swd/swclk"
+    set swd.swd.nrst net.name "nrst"
+
+    // …and the MCU's USB onto the receptacle, so a board is programmed over the cable with no
+    // probe. Named at this end only: the pair is one node per line, and `usb/d+` is about the
+    // link rather than about either end of it.
+    connect usb from=mcu to=usb
+    set usb.usb.dp net.name "usb/d+"
+    set usb.usb.dm net.name "usb/d-"
+
+    // --- Lands --------------------------------------------------------------------------------
+    //
+    // The reference, because dead here is a dead CAN node and three dead legs with no other
+    // symptom. The legs' rail after the shunt — a meter here and a bus-voltage reading over I²C
+    // either agree or the monitor is wrong; drilled, so it is probed from either face and takes a
+    // lead soldered in. And the ground a scope measures any of it against — a loop, for the clip
+    // that stays on while the other hand holds the probe. The link's own lands are on the
+    // isolated side and must not be borrowed for board-side signals; the legs' returns *are* this
+    // node, which is what makes a LIN conductor probe-able against it.
+    scope tp {
+        place test-point hse at=osc.out package=pad designator=HSE \
+            note="the 40 MHz reference into OSC_IN — dead here is a dead CAN node and three dead legs with no other symptom"
+        place test-point vlin at=rail.vlin.rail package=hole designator=VLIN \
+            note="the legs' rail after the shunt — a meter here and a bus-voltage reading over I2C either agree or the monitor is wrong"
+        place test-point gnd at=rail.vpwr.gnd package=loop designator=GND \
+            note="board-side scope ground — the non-isolated return every leg's LIN is measured against"
+    }
+
+    // --- What holds the board, and what finds it -------------------------------------------
+    //
+    // Four unplated holes: this node's backbone is isolated, and a plated hole at each corner
+    // would bond the enclosure to GND and put the star's return through the standoffs. Three
+    // fiducials for the machine that places the surface-mount side.
+    place mounting-hole "mount/nw"
+    place mounting-hole "mount/ne"
+    place mounting-hole "mount/sw"
+    place mounting-hole "mount/se"
+    place fiducial "fid/0"
+    place fiducial "fid/1"
+    place fiducial "fid/2"
+
+    // --- What the board deliberately leaves unspent ------------------------------------------
+    //
+    // Thirty-six of the die's port pins, declared rather than left to be inferred — plus PF1,
+    // declared up at the oscillator because *why* it is unused is the bypass mode. On a board a
+    // dropped join looks exactly like an unused pin, and the only thing that tells them apart is
+    // whether somebody said so.
+    //
+    // Two pairs are held rather than merely spare. PA2/PA3 are the USART2 pair the die also gives
+    // LPUART1, and leg 2 would sit there beside the other two on the bottom edge if the answer
+    // were tidier to check. PA4/PA5 are the die's only DAC pads, kept the way every G0B1 core
+    // here keeps them. PA0/PA1 are USART4, which has no LIN mode: a leg the die cannot master in
+    // hardware is a leg this hub does not have. No ADC channel is spent either: the rail this hub
+    // reports is the bus monitor's bus-voltage register, read over I²C, so there is no sense line
+    // for a front-end to condition. The USB pair at pads 43 and 44 *is* spent, and the two UCPD
+    // dead-battery balls beside it are not: the port's CC lines end in the usb sheet's Rd, and a
+    // sink taking default power has nothing for a PD controller to do.
+    nc mcu.PA0 mcu.PA1 mcu.PA2 mcu.PA3 mcu.PA4 mcu.PA5 mcu.PA6 mcu.PA8 mcu.PA9 mcu.PA10 mcu.PA15 \
+       mcu.PB0 mcu.PB1 mcu.PB2 mcu.PB3 mcu.PB4 mcu.PB8 mcu.PB9 \
+       mcu.PC0 mcu.PC6 mcu.PC7 mcu.PC8 mcu.PC9 mcu.PC10 mcu.PC11 mcu.PC12 mcu.PC13 mcu.PC14 mcu.PC15 \
+       mcu.PD0 mcu.PD1 mcu.PD2 mcu.PD3 mcu.PD4 mcu.PD8 mcu.PD9 \
+        note="unspent — the LQFP-64 was chosen for its leads, not its pin count. PA2/PA3 are USART2's bottom-edge pair, held; PA4/PA5 are the DAC pads, held; PA0/PA1 are USART4, unspent because USART4 has no LIN mode and a leg without a hardware break is not a leg here; PA9/PA10's UCPD dead-battery balls, because the port negotiates nothing and its CC lines end in Rd; no ADC channel, because the rail is read from the bus monitor over I2C"
+}

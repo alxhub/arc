@@ -1,0 +1,52 @@
+// One rev 2 district: a DRV8874 bridge with a two-range IPROPI termination.
+// nPROG low selects the 250 mA programming range; high adds the running leg.
+
+use "@stackup/passives"
+use "@stackup/driver/motor/drv8874"
+use "@stackup/discrete/fet/bss138"
+
+block district {
+    port drive type=power
+    port logic type=power
+    port vref
+    port signal
+    port gate type=pwm
+    port sleep
+    port fault
+    port sense
+    port nprog
+    port a
+    port b
+
+    // Rev 2 layout requirement: twelve filled-and-capped thermal vias under
+    // this PowerPAD, 3 × 4 on a 1.35 × 1.3 mm grid, 0.6 / 0.3 mm process.
+    // KDL cannot place or specify vias yet; carry this into the PCB layout.
+    place drv8874 bridge drive=drive logic=logic
+    circuit bridge.VREF vref
+    circuit signal bridge.phase name="DCC"
+    circuit gate bridge.enable name="PWM"
+    circuit sleep bridge.sleep name="nSLEEP"
+    circuit fault bridge.fault name="nFAULT"
+    circuit bridge.out-a a name="A"
+    circuit bridge.out-b b name="B"
+    circuit bridge.sense sense name="ISENSE"
+
+    // The driver holds nSLEEP low internally until the MCU wakes it.
+    // An undriven range switch remains off through its gate pull-down.
+    place bss138 range
+    circuit nprog range.gate
+    circuit range.source logic.gnd
+    place pull-down Rrange node=range.gate rail=logic value="100kΩ"
+
+    // The always-on programming leg: 22.1 kΩ and the local 10 nF IPROPI filter.
+    place resistor Rprog value="22.1kΩ" intent=series
+    place capacitor Cprog value="10nF" intent=filter
+    circuit sense Rprog logic.gnd
+    circuit sense Cprog logic.gnd
+
+    // The running resistor and filter both leave the node when BSS138 is off.
+    place resistor Rrun value="2.49kΩ" intent=series
+    place capacitor Crun value="100nF" intent=filter
+    circuit sense Rrun range.drain
+    circuit sense Crun range.drain
+}

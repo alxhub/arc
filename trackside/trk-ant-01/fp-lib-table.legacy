@@ -1,0 +1,3 @@
+(fp_lib_table
+  (lib (name "arc") (type "KiCad") (uri "${KIPRJMOD}/footprints/arc.pretty") (options "") (descr "ARC antenna flex footprints"))
+)

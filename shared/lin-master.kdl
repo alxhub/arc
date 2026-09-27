@@ -1,0 +1,168 @@
+// One LIN leg as a hub carries it: two default-off high-side switches — one for the bus rail, one
+// for the 5 V pixel rail — the transceiver on the switched side, the master's 1 kΩ-and-diode
+// termination, and the jack. Three of these on three UARTs is what makes trk-hub-01 a hub, and
+// none of the three knows which it is. Ported from arc's `shared::lin::master`.
+//
+// What the port is testing:
+//
+// - **A switched rail with no declaration.** The Rust sheet declared the switched rail's window
+//   itself, because its switch block sourced its output as *any voltage*. Here the switch is a
+//   pass element whose `out` sets `in.voltage`, so the window the board states on `vpwr` arrives
+//   past the switch on its own, and the transceiver's, the termination's and the jack's rail is
+//   checked against what the board actually feeds.
+// - **A requirement on a capability, on a re-exported port.** The leg's `uart` is the
+//   transceiver's, joined line by line; `require signal.lin` on it is what holds the board's
+//   answer to an instance with a hardware break.
+// - **Names internal to a sheet stay in it.** LIN, VPWR, V5, the two gate-drive nodes and the
+//   termination's mid-point are the leg's own words; the enable and the UART are the board's to
+//   name, and are not named here.
+
+use "@stackup/passives"
+use "@stackup/discrete/fet/bss138"
+use "@stackup/discrete/fet/dmp3013"
+use "@stackup/discrete/diode/diode"
+use "@stackup/bus/lin/ncv7321"
+use "./lin.kdl"   // for `lin-port`
+
+block lin-master {
+    // The bus rail — the layout's track-family supply, through the leg switch onto the cable.
+    // What the sheet demands from the board, and what the leg is *for*.
+    port vpwr type=power
+    // The pixel rail as the board hands it — 5 V from the hub's buck, ahead of the leg's second
+    // switch. Not what the leg is for; it rides along for the nodes' pixels.
+    port v5 type=power
+    // The host's 3.3 V — what pulls RxD up and holds the transceiver enabled.
+    port logic type=power
+    // The host link. The crossover is the type's: the MCU's tx lands on the transceiver's TxD.
+    // LIN mode — the 13-bit break a master opens every frame with — is a capability of the
+    // instance, and the requirement is what keeps a leg off a UART that would have to make its
+    // break in firmware.
+    port uart type=uart {
+        require signal.lin
+    }
+    // The leg enable — high closes both switches and puts VPWR and V5 on the cable; undriven is
+    // off. Everything on the leg is behind this pin: a leg can be powered down alone to isolate a
+    // fault, a shorted cable pulls down one leg's rail and not its neighbours', and a wedged bus
+    // is recovered by dropping it and raising it again. Firmware owns the schedule, so it also
+    // owns this.
+    port enable type=output
+
+    // --- The leg switch -----------------------------------------------------------------------
+    //
+    // VPWR in, the leg's rail out, off by default. The same block and the same driver as psu-01's
+    // link switch, for the same reason: the block brings the default-off gate pull-up, the
+    // soft-start cap and the series resistor, and what the sheet adds is the low-side driver that
+    // lets a push-pull GPIO work the open-drain gate node. No gate–source Zener: at the rail's
+    // 18 V ceiling the enabled gate sees 18 V against a ±25 V limit, which the block asserts.
+    place high-side-switch switch in=vpwr
+    place bss138 driver note="low-side gate driver — enable high pulls the P-gate down"
+    circuit driver.drain switch.gate-drive
+    circuit driver.source vpwr.gnd
+    circuit enable driver.gate
+    place pull-down enable-pd node=driver.gate rail=vpwr value="100kΩ" \
+        note="enable pulldown — an undriven enable leaves the leg dark"
+    set switch.gate-drive net.name "switch/drive"
+
+    // The switched rail: the leg's VPWR as far as everything past the switch is concerned — the
+    // transceiver's supply, the termination's top, the cable's rail — so that is what it is
+    // called, and the switch's own `GATE` name is the only other word on that side.
+    set switch.out.rail net.name "VPWR"
+
+    // --- The pixel rail's switch ----------------------------------------------------------------
+    //
+    // The hub's 5 V onto the cable beside VPWR, through a second copy of the same switch worked
+    // from the same enable, so a leg is still one thing: drop it and both rails go. Its own driver
+    // rather than a shared drive node, because each switch's gate pull-up returns to its own
+    // source — one drain hanging on both would leave the 16 V pull-up holding the 5 V gate above
+    // its source and the 5 V pull-up holding the VPWR gate half-open, through each other, whenever
+    // the leg is meant to be off.
+    place high-side-switch switch5 in=v5
+    place bss138 driver5 note="low-side gate driver for the 5 V switch — the same enable"
+    circuit driver5.drain switch5.gate-drive
+    circuit driver5.source vpwr.gnd
+    circuit driver5.gate enable
+    set switch5.gate-drive net.name "switch5/drive"
+    set switch5.out.rail net.name "V5"
+    // Both rails stand on the one return: the cable's, which is the board's.
+    circuit v5.gnd vpwr.gnd
+    circuit logic.gnd vpwr.gnd
+
+    // --- The transceiver, on the switched side --------------------------------------------------
+    //
+    // Its VBB is the leg's rail rather than the board's, so the leg dies as one thing: switch it
+    // off and the transmitter, the receiver's thresholds and the termination all go with it.
+    //
+    // EN is tied to the host rail rather than vended — the switch is the leg's off state, and it
+    // is a more complete one than sleep mode, which would leave a wake-up current source on a
+    // cable this board has just decided to unpower. The pin is specified to 45 V absolute against
+    // an unpowered part, so holding it at 3.3 V while VBB is off costs nothing. WAKE is tied to the
+    // rail for the same reason — it matters only in a sleep this leg never enters — and INH, whose
+    // job is to sleep an external regulator or a master's pull-up along with the part, has
+    // nothing here to sleep.
+    place ncv7321 xcvr vbb=switch.out
+    circuit xcvr.en logic.rail
+    circuit xcvr.wake switch.out.rail
+    nc xcvr.INH note="the leg never sleeps — the switch is its off state, so there is no regulator or pull-up for INH to inhibit"
+
+    // RxD is open-drain and the part has no logic supply, so the level the host sees is whatever
+    // this pull-up hangs on: the host's 3.3 V, and never the bus rail. The transceiver sinks
+    // 1.5 mA at 0.4 V, so anything above ~2.2 kΩ is safe; 10 kΩ keeps the recessive edge under a
+    // microsecond against a GPIO's few picofarads at a bus that runs 50 µs bits.
+    place pull-up Rrxd node=xcvr.RxD rail=logic value="10kΩ" \
+        note="RxD pull-up — open-drain output, so this sets the host's high"
+
+    // The host link, seen through this block's port.
+    circuit uart.tx xcvr.uart.tx
+    circuit uart.rx xcvr.uart.rx
+
+    // --- The master termination -------------------------------------------------------------
+    //
+    // 1 kΩ and a diode from the bus conductor to the switched rail, per LIN 2.x §6.3 and the
+    // family's external-components table ("1 kΩ nominal, ≥ 500 mW"): anode at the rail, cathode
+    // toward the bus, so the leg's rail can pull the bus recessive and the bus can never feed the
+    // rail — a node whose rail has gone cannot be back-fed through its own pull-up. The
+    // transceiver's own 30 kΩ stays in parallel and is the slave's share.
+    //
+    // The resistor's body is the watts rather than the value: a bus held dominant puts the whole
+    // rail across it — 0.31 W at 18 V, continuously if the cable is shorted to its return — and
+    // the datasheet's ≥ 500 mW is that case with margin. The board's 0402 stands 62.5 mW; a 2512
+    // stands 1 W, and a short runs it at a third of rating. The diode is a jellybean 100 V
+    // switching diode: it blocks the bus's 45 V load-dump rating and carries the 18 mA a dominant
+    // bus draws. The node between them is named — a meter on the termination's mid-point says
+    // whether the diode or the resistor is open.
+    //
+    // The bus conductor itself is named here: it is the one conductor of the whole bus, and the
+    // first thing a scope goes to.
+    set xcvr.lin net.name "LIN"
+    scope term {
+        place diode D value="1N4148W" package=sod123 \
+            note="master termination diode — the rail pulls the bus up, the bus cannot feed the rail"
+        place resistor R value="1kΩ" intent=pull-up footprint="Resistor_SMD:R_2512_6332Metric" \
+            note="master termination — 1 kΩ to the bus rail; a 2512 because a shorted cable puts the whole rail across it"
+        circuit switch.out.rail D R xcvr.lin
+        set D.b net.name "K"
+    }
+
+    // The filter on the bus conductor, at the master: 1 nF, which is what the family's own tables
+    // give a master (NCV7428: "typically 1 nF") against a slave's 220 pF. It is a network budget
+    // rather than a local filter — the whole leg's capacitance against the pull-up sets the
+    // recessive edge — and the transceiver's AC characteristics are specified against exactly
+    // this load first (1 kΩ / 1 nF).
+    place filter Clin node=xcvr.lin rail=switch.out value="1nF" \
+        note="bus filter at the master — 1 nF, the network's budget for this end"
+
+    // --- The jack -----------------------------------------------------------------------------
+    //
+    // The pinout is the part's — VPWR, LIN, V5, GND — and what is left here is which of this
+    // leg's nodes each conductor reaches. One jack, not two: a leg starts here, and it is the
+    // nodes along it that pass the bus through. The rails on the cable are the *switched* rails: a
+    // leg unplugged at the hub and a leg switched off look the same from the far end. LIN1, LIN2,
+    // … on the silk: an installer plugging a leg in reads the bus's name and which leg this is,
+    // and J4 says neither.
+    place lin-port jack reference=LIN \
+        note="the leg's port — VPWR on 1, LIN on 2, the 5 V pixel rail on 3, GND on 4 — to the first node along the track"
+    circuit jack.VPWR switch.out.rail
+    circuit jack.GND vpwr.gnd
+    circuit jack.LIN xcvr.lin
+    circuit jack.V5 switch5.out.rail
+}

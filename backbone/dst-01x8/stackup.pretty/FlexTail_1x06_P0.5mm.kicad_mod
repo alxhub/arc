@@ -1,0 +1,117 @@
+(footprint "FlexTail_1x06_P0.5mm"
+	(version 20260206)
+	(generator "stackup")
+	(descr "The end of a flexible circuit that plugs into a 6-position 0.5 mm FPC connector: six gold fingers, 0.3 mm wide and 3.5 mm long on a 0.5 mm pitch, on a 4.0 mm wide tail. Mask opened over the fingers, no paste. The stiffener goes on the far side of the fingers, bringing the tail to 0.3 mm; the fingers face the connector's contacts, which on a Hirose FH12-xxS-0.5SH are on the bottom. Pad 1 is at the left with the fingers facing you and the tail pointing away.")
+	(tags "flex FPC tail fingers 0.5mm")
+	(layer "F.Cu")
+	(property "Reference" "REF**"
+		(at 0 4.5 0)
+		(unlocked yes)
+		(layer "F.Fab")
+		(hide yes)
+		(effects
+			(font
+				(size 0.8 0.5)
+				(thickness 0.1)
+			)
+		)
+	)
+	(property "Value" "FlexTail_1x06_P0.5mm"
+		(at 0 5.5 0)
+		(unlocked yes)
+		(layer "F.Fab")
+		(hide yes)
+		(effects
+			(font
+				(size 0.8 0.5)
+				(thickness 0.01)
+			)
+		)
+	)
+	(attr smd)
+	(duplicate_pad_numbers_are_jumpers no)
+	(fp_rect
+		(start -2 -2)
+		(end 2 4)
+		(stroke
+			(width 0.05)
+			(type solid)
+		)
+		(fill no)
+		(layer "F.Fab")
+	)
+	(fp_rect
+		(start -2 -2)
+		(end 2 4)
+		(stroke
+			(width 0.05)
+			(type solid)
+		)
+		(fill no)
+		(layer "B.Fab")
+	)
+	(fp_text user "stiffener 0.2mm, this side"
+		(at 0 1 0)
+		(unlocked yes)
+		(layer "B.Fab")
+		(effects
+			(font
+				(size 0.5 0.5)
+				(thickness 0.05)
+			)
+			(justify mirror)
+		)
+	)
+	(fp_text user "tail end"
+		(at 0 -2.5 0)
+		(unlocked yes)
+		(layer "Cmts.User")
+		(effects
+			(font
+				(size 0.5 0.5)
+				(thickness 0.05)
+			)
+		)
+	)
+	(fp_rect
+		(start -2.25 -2.25)
+		(end 2.25 4.25)
+		(stroke
+			(width 0.05)
+			(type solid)
+		)
+		(fill no)
+		(layer "F.CrtYd")
+	)
+	(pad "1" smd rect
+		(at -1.25 0)
+		(size 0.3 3.5)
+		(layers "F.Cu" "F.Mask")
+	)
+	(pad "2" smd rect
+		(at -0.75 0)
+		(size 0.3 3.5)
+		(layers "F.Cu" "F.Mask")
+	)
+	(pad "3" smd rect
+		(at -0.25 0)
+		(size 0.3 3.5)
+		(layers "F.Cu" "F.Mask")
+	)
+	(pad "4" smd rect
+		(at 0.25 0)
+		(size 0.3 3.5)
+		(layers "F.Cu" "F.Mask")
+	)
+	(pad "5" smd rect
+		(at 0.75 0)
+		(size 0.3 3.5)
+		(layers "F.Cu" "F.Mask")
+	)
+	(pad "6" smd rect
+		(at 1.25 0)
+		(size 0.3 3.5)
+		(layers "F.Cu" "F.Mask")
+	)
+	(embedded_fonts no)
+)

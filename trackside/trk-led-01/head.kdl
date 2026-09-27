@@ -1,0 +1,46 @@
+// One signal head: the header a head's leads land on, and the three lamp channels behind it.
+// The signal node places four. Ported from arc's `block::trk_led_01::lamps`, which was one bank
+// of twelve; a head is the unit a person wires, so it is the unit the design repeats.
+//
+// What the port is testing:
+//
+// - **A connector's worth is a block, placed four times.** The board invokes it once per head
+//   with literal answers, which is the format's stance on repetition: no loop, one source site
+//   per fact, and `head3/l2` says which lamp on which head.
+// - **A head's gates are one contract.** Three `pwm` lines in a type, so the board answers a
+//   head's three pins in one `connect`, and moving one lamp to another pad is one edit.
+// - **Cathode names live under the head.** `K1`–`K3` compose onto the head's path, so the netlist
+//   reads `head3/K2` and no board-wide numbering has to be kept straight.
+
+use "@stackup/connector/header"
+use "../../shared/lamp.kdl"
+
+// A head's three aspects, as the MCU drives them.
+type head-gates {
+    line l1 type=pwm
+    line l2 type=pwm
+    line l3 type=pwm
+}
+
+block head {
+    // The bus rail every lamp's common anode sits on. The MCU's 3.3 V never reaches a head.
+    port rail type=power
+    port gates type=head-gates
+
+    // The header: the common anode on pin 1 and the three cathodes after it, so a signal's
+    // pigtail lands on one header. LED on the silk, numbered across the four heads, because the
+    // person reading it is holding a pigtail and looking for the head, not for a connector.
+    place conn-1x4 J reference=LED \
+        note="a signal head — the common anode (VPWR) on pin 1, then the cathodes of its three aspects"
+    circuit rail.rail J.1
+
+    // The channels, each handed the head's rail and one line of its gate contract.
+    place lamp l1 rail=rail gate=gates.l1
+    place lamp l2 rail=rail gate=gates.l2
+    place lamp l3 rail=rail gate=gates.l3
+
+    // Each cathode to its header position, named as the lead is labelled.
+    circuit l1.cathode J.2 name="K1"
+    circuit l2.cathode J.3 name="K2"
+    circuit l3.cathode J.4 name="K3"
+}

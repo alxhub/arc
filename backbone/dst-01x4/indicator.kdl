@@ -1,0 +1,43 @@
+// The board's six pixels: ARC, STATUS, then one lamp per district.
+
+use "@stackup/passives"
+use "@stackup/power/brick/r78e"
+use "@stackup/logic/ahct1g125"
+use "@stackup/discrete/led/ws2812b"
+use "@stackup/mechanical"
+
+block district-indicator {
+    port vpwr type=power
+    port v5 type=power
+    port data type=pwm
+
+    place r78e5v0-0a5 brick in=vpwr designator="5V_BUCK" {
+        with emc-class-b
+    }
+    connect power from=brick.out to=v5
+    place ahct1g125 shifter vcc=brick.out designator=PIXELS
+    circuit data shifter.in
+
+    place ws2812b-2020 arc vdd=brick.out designator=ARC
+    place ws2812b-2020 status vdd=brick.out designator=STATUS
+    place ws2812b-2020 d0 vdd=brick.out
+    place ws2812b-2020 d1 vdd=brick.out
+    place ws2812b-2020 d2 vdd=brick.out
+    place ws2812b-2020 d3 vdd=brick.out
+
+    // The shifter drives board copper directly. A header's damping resistor
+    // would be misplaced here; every pixel has its own 100 nF bypass.
+    circuit shifter.out arc.din name="DIN"
+    circuit arc.dout status.din
+    circuit status.dout d0.din name="board/out"
+    circuit d0.dout d1.din
+    circuit d1.dout d2.din
+    circuit d2.dout d3.din
+    nc d3.DOUT note="the last district lamp has no onward data line"
+
+    // This reservoir is a 1210 ceramic, beside the pixel chain head.
+    place bulk Cres node=brick.out.rail rail=brick.out value="10µF" footprint="Capacitor_SMD:C_1210_3225Metric" \
+        note="the six pixels' PWM reservoir, at the chain head"
+    place test-point data-out at=arc.din package=pad designator=DATA \
+        note="the five-volt data stream after the level shifter"
+}

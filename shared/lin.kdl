@@ -1,0 +1,118 @@
+// arc's track-side bus: the jack every trackside node carries, and the node sheet built on it —
+// the far end of a LIN leg. Ported from arc's `shared::connector::LinPort` and `shared::lin::node`.
+//
+// What the port is testing:
+//
+// - **A sheet that sources and demands nothing.** In Rust, `lin_node` had no `Powered` impl and
+//   minted two supplies and a UART peer. Here it is a block whose ports *provide*: `vpwr` and `v5`
+//   `set` the voltage the cable brings, and `v3v3` is the SBC's regulator seen through the block.
+// - **Re-exporting a child's port is `circuit`, line by line.** The block's `v3v3` is the SBC's
+//   `vout`, and its `link` is the SBC's `uart`. Neither is a `connect`: a `connect` is a link with
+//   the type's crossover in it, and a block port is one thing seen from two sides, so joining a
+//   child's `tx` to the block's `tx` is plain wiring. Two `circuit`s for a power port, two for a
+//   UART. Verbose, and honest; a shorthand can come later.
+// - **A requirement on a capability.** The link wants LIN mode and auto-baud, which only USART1
+//   has. `require signal.lin` on the `uart` port is how the contract says so without naming an instance.
+
+use "@stackup/passives"
+use "@stackup/bus/lin/ncv7428"
+
+// The track-side bus port: a 6P4C jack — the four contacts of an RJ11 body — carrying the layout's
+// track-family DC supply, the one signal conductor, the hub's 5 V pixel rail, and the return.
+// Two rails on one cord: VPWR is distributed and regulated at the load, because it carries the
+// lamps; V5 is regulated at the hub and carried, because what it feeds is a handful of pixels.
+// A LIN receiver's thresholds are 40 % and 60 % of its own supply, so VPWR is also what the
+// signal is measured against, and every node on a leg sees one rail because this cable carries it.
+//
+// The body is Stewart's SS-90000-006, a right-angle four-contact jack with a panel stop.
+part lin-port {
+    symbol "Connector:RJ11"
+    reference J
+    description "track-side bus port — 6P4C: VPWR, LIN, the 5 V pixel rail, GND"
+    datasheet "https://www.cinch.com/media/drawings/products/ethernet-usb/dr-STW-SS-90000-006.pdf"
+    manufacturer "Stewart Connector"
+    order mpn="SS-90000-006" mouser="530-SS-90000-006"
+
+    pin VPWR passive
+    pin LIN passive
+    pin V5 passive
+    pin GND passive
+
+    package rj11 footprint="stackup:RJ11_Stewart_SS-90000-006_Horizontal" {
+        pad VPWR 1
+        pad LIN 2
+        pad V5 3
+        pad GND 4
+    }
+
+    port VPWR pin=VPWR
+    port LIN pin=LIN
+    port V5 pin=V5
+    port GND pin=GND
+}
+
+// The node sheet: two jacks in parallel, because a leg is a chain and a node is a link in it —
+// the bus arrives on one and leaves on the other — and the system basis chip whose regulator is
+// the MCU's whole supply. A node converts nothing, and this sheet is why it does not have to.
+block lin-node {
+    // The bus rail as the cable brings it, at the window every backbone node declares: 13 V on
+    // an N layout less a volt of cable, 16 V on HO plus an installer's trim. Sourced here because
+    // the jack is where it enters. No reverse-polarity diode: a cord is tested before it is
+    // plugged, and the half volt a Schottky took off the floor was a cost every lamp ballast on
+    // a leg paid for a fault the process rules out.
+    port vpwr type=power {
+        set net.voltage min="12V" max="18V"
+        line rail { set net.name "VPWR" }
+        line gnd { set net.name "GND" }
+    }
+
+    // The pixel rail: 5 V as the hub sends it, on the cable's third contact and the same return.
+    // The window is the hub's R-78E ±2 % less what a short leg of cord drops at tens of milliamps.
+    port v5 type=power {
+        set net.voltage min="4.75V" max="5.1V"
+        line rail { set net.name "V5" }
+    }
+
+    // The SBC's regulator: 3.3 V, 70 mA. For the MCU and nothing else.
+    port v3v3 type=power
+
+    // The MCU link. The crossover is the bus's: the MCU's tx lands on the SBC's TxD.
+    port link type=uart {
+        require signal.lin
+    }
+
+    // The SBC's reset flag — open drain, low until the regulator's output is good — for the MCU's
+    // reset node: the supervisor the STM32's own block leaves to the board.
+    port reset
+
+    // The bus conductor at the jack, for a test point: a jack with a cord in it cannot be probed.
+    port lin {
+        set net.name "LIN"
+    }
+
+    // The two jacks, TRK1 and TRK2 on the silk: they are one bus and a cable goes in either, so
+    // the legend is the bus's name rather than a connector number.
+    place lin-port a reference=TRK \
+        note="the track-side bus — VPWR on 1, LIN on 2, the 5 V pixel rail on 3, GND on 4; in parallel with the other jack, so the leg passes through"
+    place lin-port b reference=TRK \
+        note="the same port on a second body — a cord carries the leg on to the next node"
+    circuit a.VPWR b.VPWR vpwr.rail
+    circuit a.V5 b.V5 v5.rail
+    // One return: the cable's, which on a leg is the only ground there is. Both rails stand on it.
+    circuit a.GND b.GND vpwr.gnd v5.gnd
+    circuit a.LIN b.LIN lin
+
+    // The system basis chip: its VS on the rail, its regulator making the MCU's 3.3 V, its LIN
+    // on the jack. EN is strapped by the part's default block — a node on a powered bus wants the
+    // transceiver up whenever it has a rail. XLIN on the silk: the transceiver is what a probe on
+    // the bus is looking for.
+    place ncv7428d13 sbc vs=vpwr designator=XLIN
+    circuit sbc.lin lin
+    circuit sbc.reset reset
+
+    // The regulator's output and the MCU link, seen through this block's ports.
+    circuit v3v3.rail sbc.vout.rail
+    circuit v3v3.gnd sbc.vout.gnd
+    circuit link.tx sbc.uart.tx
+    circuit link.rx sbc.uart.rx
+}

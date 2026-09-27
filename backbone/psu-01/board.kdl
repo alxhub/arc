@@ -1,0 +1,338 @@
+// ARC-PSU-01: the backbone supply node. One power source, one deliberate switch, the DCC sync
+// generated and put on the pair, the CAN bus listened to, and a light bar that says what it sees.
+// A DIN-rail supply trimmed to the layout's track voltage — the same unit a district takes —
+// switches onto the star. This is the one non-isolated node: it is the star's ground reference,
+// energises the bus only deliberately, measures what leaves, and is the node the sync comes from.
+//
+// Structurally it is one STM32C092 between four blocks — `rail`, `backbone`, `bar` and `console`
+// — and the board is the joins between them. Ported from arc's `board::psu_01`; the why of each
+// join is beside it.
+//
+// What the port is testing, beyond the sheets it places:
+//
+// - **Two supplies, both bricks, both from one provided rail.** The rail sheet provides VPWR; the
+//   logic brick and the bar's brick each take it, and each brick's input network is held to the
+//   floor the sheet states. The console's island is the cable's, and no rail here reaches it.
+// - **Every MCU link is a `connect`, and every answer is here** — twenty-six of forty-five port
+//   pins, each written beside the contract it answers. The nets they make are named at the far
+//   end, on a block's port, because the MCU's pins are `once` and a name is not a second use.
+// - **What the MCU reads is a `circuit`, what it drives is a `connect`.** A readback, an alert and
+//   the reference clock are plain joins to an input; an enable, a mode pin and a stream are
+//   answered contracts, so the pin's peripheral is checked.
+// - **Three timer streams on three counters is not something the format can hold yet.** DCC on
+//   PB4 is TIM3's alone; the bar's PB7 and the backlight's PA1 each reach several, and the design
+//   wants them apart because they run at different periods. A composed type with a `counter`
+//   assertion would say so, but type-level assertions are not evaluated — logged in OPEN.md.
+// - **Deliberate absence.** Nineteen pins the board does not wire are declared spare, so a spare
+//   pin that later lands on a net is a finding rather than a surprise.
+
+use "@stackup/passives"
+use "@stackup/connector/qwiic"
+use "@stackup/connector/swd"
+use "@stackup/types"
+use "@stackup/mechanical"
+use "@stackup/micro/stm32c092"
+use "@stackup/power/brick/r78k"
+use "@stackup/clock/ecs2520mv"
+use "@stackup/discrete/led/led"
+use "../../shared/connectors.kdl"
+use "./rail.kdl"
+use "./backbone.kdl"
+use "./bar.kdl"
+use "./console.kdl"
+
+design psu-01 {
+    stock {
+        packages imperial="0402"
+        derating voltages="16V 25V 50V"
+        tracks "0.2mm 0.25mm 0.3mm 0.4mm 0.8mm 1.0mm 2.0mm"
+    }
+
+    // --- Power: one source, two bricks, and a receptacle that powers nothing --------------------
+    //
+    // The rail sheet owns the DC terminal and provides VPWR, pre-switch, and VLINK past the
+    // switch and its monitor. The logic chain is off VPWR — *before* the link switch, which is the
+    // board's architecture in one join: the MCU is alive to decide about the backbone, not powered
+    // by its own decision. It is the same R-78K and input filter the districts carry: one brick
+    // makes 3.3 V directly, with no stage in between. That brick is a switcher rated 500 mA, and
+    // the number matters here in a way it does not on a district: this board exports its 3.3 V on
+    // two Qwiic lands, so what the brick has left after the logic is the budget a panel gets.
+    //
+    // The sheet and the brick each take a rail from the other, and a port argument is resolved
+    // where it is written, so one of the two joins is the statement its shorthand stands for.
+    place rail rail
+    place r78k3v3 logic in=rail.vpwr designator="3V3_BUCK" {
+        with emc-class-b
+    }
+    connect power from=logic.out to=rail.logic
+    circuit logic.out.rail name="3V3"
+
+    // The light bar, on a second brick off the same pre-switch rail. Its pixels are 5 V parts, and
+    // the 5 V they need is the bar's own — see the bar's file for why not a buck and an LDO.
+    place bar bar vpwr=rail.vpwr
+
+    // The switched rail into the backbone sheet's port — the join the whole board exists to make.
+    place backbone backbone logic=logic.out link=rail.vlink
+
+    // The diagnostic port: everything on the cable's side of the barrier runs off the cable and
+    // sits on the cable's return. What the sheet demands from the board is the barrier's host
+    // side, on the logic rail with everything else.
+    place console console logic=logic.out
+
+    // The two pilots that need no firmware. The rail's: the one thing that says the brick made its
+    // rail, which is otherwise only observable by the MCU working. The block's default 680 Ω is
+    // 2 mA of a 500 mA budget. The link's: the rail monitor tells the MCU the rail is up, this
+    // tells the person plugging in the star. 10 kΩ sizes it at the *floor* of VLINK, 1 mA at 12 V,
+    // and what that resistor dissipates at the ceiling is the whole of the budget: 26 mW at 18 V,
+    // where 2 mA would have been 50 mW — four fifths of an 0402 — on a lamp that is on whenever the
+    // star is. A 570 nm AlInGaP die in an 0805 is a perfectly readable pilot at a milliamp.
+    place indicator v3v3-led rail=logic.out designator=REG
+    place indicator link-led rail=rail.vlink r="10kΩ" limit="2mA" designator=LNK
+
+    // The reservoir behind the Qwiic lands, and it belongs to the board rather than to the logic
+    // brick. Every other board's 3.3 V stays on the board; this one exports the rail down 200 mm
+    // of cable to something nobody here specified, and a satellite waking its screen is a step
+    // load at the far end of that. One reservoir for both lands, because they are one rail at one
+    // node — and nothing at the lands themselves: a satellite carries its own bypass.
+    place bulk v3v3-bulk node=logic.out.rail rail=logic.out value="10µF" footprint="Capacitor_SMD:CP_Elec_5x5.8" \
+        note="reservoir for the exported rail — the Qwiic ports' load is a cable away and is not this board's to bound"
+
+    // --- The MCU and its reference ---------------------------------------------------------------
+    //
+    // A C092 in the LQFP-48, because that is the body with a dedicated HSE pad and with the ROM
+    // bootloader's CAN on a pair the port side can reach — both argued at the joins below. What it
+    // is *not* is a part with USB: the C092 is the C0 die with FDCAN where the C071 has USB, and
+    // the bus is what this node is for. STM32 on the silk, whole.
+    //
+    // A 40 MHz external reference, despite the C0's HSI48: CAN FD's data-phase oscillator budget
+    // is a few tenths of a percent, and the internal RC's ±1 % over temperature does not clear it.
+    // The C092's FDCAN takes its kernel clock straight off HSE — there is no PLL on the die — and
+    // 40 MHz is the reference every other CAN node runs, so the whole backbone quantises bit time
+    // identically. The DCC waveform is three orders of magnitude slower than anything that budget
+    // worries about.
+    place stm32c092 mcu vdd=logic.out package=lqfp48 designator=STM32
+    place ecs2520mv osc vdd=logic.out value="40MHz" \
+        note="the 40 MHz reference — CAN FD's data-phase budget is tighter than the HSI's ±1 %"
+
+    // HSE **bypass**: the oscillator drives OSC_IN and OSC_OUT carries nothing. PF0 is the
+    // dedicated HSE pad, with HSE_NOT_REMAPPED set — the one path no revision of the C0 errata
+    // record can question; the sub-48 bodies remap HSE onto PC14, and the C031's erratum on that
+    // path is why this board takes the body that does not. An unwired PF1 is either this mode or a
+    // missing crystal, and only one of those is a decision.
+    circuit osc.out mcu.PF0 name="hse"
+    nc mcu.PF1 note="HSE bypass — the oscillator drives OSC_IN on PF0, so OSC_OUT is unused; a crystal would need it"
+
+    // --- What the MCU's pins are spent on --------------------------------------------------------
+
+    // CAN FD, straight out of the on-die FDCAN1 and into the transceiver. PD0/PD1 is not an
+    // arbitrary pair: it is the pair the C092's ROM bootloader listens on in this package, so a
+    // blank or bricked board is flashed over the backbone with no probe. That is this node's
+    // provisioning story in the cabinet — and it works with the star dark, because the
+    // transceiver runs off the board's own 3.3 V rather than the rail the switch has not yet
+    // closed. The two mode lines are the negotiate-then-energise contract's second half: firmware
+    // holds the transceiver in standby until the rail is up, so the bus never sees a node half
+    // awake. Static levels, so they take a pad either side of the pair and route nowhere in
+    // particular.
+    connect can {
+        from mcu rx=PD0 tx=PD1
+        to backbone
+    }
+    circuit backbone.fdcan.tx name="can/txd"
+    circuit backbone.fdcan.rx name="can/rxd"
+    connect output from=mcu.PD2 to=backbone.stb
+    connect output from=mcu.PA15 to=backbone.shdn
+    circuit backbone.stb name="can/stb"
+    circuit backbone.shdn name="can/shdn"
+
+    // The console, on USART1 at PA9/PA10 — the pair is also the C0 ROM bootloader's default
+    // USART, so the one port is a serial console under firmware and, on a blank part, a second way
+    // in with nothing but a laptop. The crossover is the type's; the nets are named from this end,
+    // so `console/txd` is the line the MCU transmits on.
+    connect uart {
+        from mcu tx=PA9 rx=PA10
+        to console
+    }
+    circuit console.uart.rx name="console/txd"
+    circuit console.uart.tx name="console/rxd"
+
+    // The DCC sync, generated here — three wires. Every other transceiver on the pair runs off the
+    // rail this board switches, so the pair cannot carry anything unless this node is up, and
+    // this node's ground is the reference every receiver's common-mode margin is measured from.
+    // The waveform comes off a timer channel: DCC is self-clocking, so the edges are the protocol,
+    // and a counter fed by DMA is what keeps them exact while the CPU serves the bus. PB4 reaches
+    // TIM3's channel 1 and nothing else, so the counter is settled by the pin.
+    connect pwm {
+        from mcu node=PB4
+        to backbone.dcc-txd
+    }
+    connect output from=mcu.PB5 to=backbone.dcc-de
+    circuit backbone.dcc-rxd mcu.PB3 name="dcc/rxd"
+    circuit backbone.dcc-txd name="dcc/txd"
+    circuit backbone.dcc-de name="dcc/de"
+
+    // The screen bus: the rail monitor and the vertical Qwiic land, mastered on I2C1 at PB8/PB9 —
+    // I2C1's pair on the package edge that faces the monitor. This is the telemetry bus: it is how
+    // the node answers "what is the backbone drawing" and, with no separate readback, "is the
+    // backbone up". What else sits on it is what a fault on it is allowed to take down: the
+    // vertical land, where the enclosure's screen hangs, fitted with the board rather than plugged
+    // in by whoever opens the case. I2C1 on the land's silk, so a cable's far end can be found in
+    // the reference manual without a netlist.
+    scope screen {
+        place i2c-pull-ups pulls rail=logic.out
+        connect i2c {
+            from mcu sda=PB9 scl=PB8
+            to rail.i2c
+        }
+        connect i2c from=rail.i2c to=pulls
+        place qwiic vertical vcc=logic.out package=vertical designator=I2C1 \
+            note="Qwiic, top-entry — the screen inside the enclosure, on the telemetry bus with the rail monitor"
+        connect i2c from=rail.i2c to=vertical
+        circuit pulls.i2c.sda name="sda"
+        circuit pulls.i2c.scl name="scl"
+    }
+
+    // The expansion bus: the side Qwiic land alone, mastered on I2C2 at PB13/PB14 — that
+    // instance's pair on the package edge that faces the side land, where the port's cable leaves
+    // the board — with its own pull-ups. The side land is the one a person reaches from outside
+    // the enclosure and plugs anything into, and a wedged expander or a crimp shorting SDA is a
+    // fault on whichever bus it shares. On its own bus that fault costs the port; on `screen` it
+    // would cost the rail telemetry, on the one board whose job is the rail telemetry. A generic
+    // I²C port rather than a promise about what hangs off it: Qwiic has no fifth conductor, so
+    // anything on it is polled, and runs off the 3.3 V the standard carries.
+    scope expansion {
+        place i2c-pull-ups pulls rail=logic.out
+        place qwiic side vcc=logic.out designator=I2C2 \
+            note="Qwiic, side-entry — out through the enclosure wall, on a bus of its own"
+        connect i2c {
+            from mcu sda=PB14 scl=PB13
+            to side
+        }
+        connect i2c from=side to=pulls
+        circuit pulls.i2c.sda name="sda"
+        circuit pulls.i2c.scl name="scl"
+    }
+
+    // The monitor's interrupt — an over-current on the backbone should not wait for the next poll.
+    circuit rail.alert mcu.PB6 name="alert/link"
+
+    // The link switch's enable. The rail sheet already names the net (`rail/LINK_EN`). The
+    // monitor's bus voltage is the switch-closed fact, so no ADC pin is spent on a readback.
+    connect output from=mcu.PD3 to=rail.enable
+
+    // The debug port: SWD on its dedicated pair, plus reset. It is the bench's, not the field's:
+    // the field flashes this board over CAN, on the bootloader pair above. The C0 has no BOOT0 pin
+    // to strap — boot selection lives in option bytes, and at the factory default an empty part
+    // boots its ROM bootloader, which is what makes the CAN path enough to provision a bare board.
+    // VTREF senses the 3.3 V this board's own brick makes, so a probe matches its levels without
+    // being told what they are.
+    place swd-header swd vref=logic.out designator=SWD
+    connect swd {
+        from mcu swdio=PA13 swclk=PA14 nrst=PF2
+        to swd
+    }
+    circuit swd.swd.swdio name="swd/swdio"
+    circuit swd.swd.swclk name="swd/swclk"
+    circuit swd.swd.nrst name="nrst"
+
+    // The bar's stream: one DMA-fed timer channel, clocking the pixels' 800 kbps NZR code out as
+    // a duty-cycle sequence — the same shape as the sync's counter and deliberately not the same
+    // counter, because the two run at different periods. PB7 because it carries a TIM1 channel on
+    // the edge the bar sits along, so the stream leaves the package facing the pixels. The bar
+    // sheet already names the net (`bar/pixels/DIN`). This is the whole of what the board says for
+    // itself beyond the two pilots: the bar is the status indicator, and what it shows is
+    // firmware's.
+    connect pwm {
+        from mcu node=PB7
+        to bar.data
+    }
+
+    // The display header, unfitted. A land for an SPI display module — the eight-pin row an ST7789
+    // module from Waveshare carries — on SPI1 and the port A pins beside it, so that a board back
+    // from the fab can grow a screen without a second fab run. Nothing is soldered here by default;
+    // the header is through-hole and hand work, and it is left off until a module is chosen.
+    //
+    // The bus is write-only: a display answers nothing over SPI and the header carries no MISO.
+    // SPI1's MISO is still answered, on PA6, to pin the instance and the two lines that matter,
+    // and then the link leaves it unbound: nothing receives it, and the pin is a declared
+    // no-connect the same way a spare is. PA4 is the select: SPI1's own NSS, so firmware can hand it to the
+    // peripheral or drive it as a pin. DC and RST are levels on the two pads before it, and the
+    // backlight is a timer channel rather than a level, because a backlight that cannot dim is one
+    // at full brightness in a dark cabinet.
+    place display-header display vcc=logic.out designator=DISP \
+        note="SPI display header, NOT FITTED by default — a land for an ST7789 module, kept so the board can grow a screen without another fab run"
+    connect spi {
+        from mcu sck=PA5 mosi=PA7 miso=PA6
+        to display
+        nc miso note="a display answers nothing over the bus — PA6 is SPI1's MISO, spent to pin the instance and carried by no conductor"
+    }
+    connect output from=mcu.PA4 to=display.cs
+    connect output from=mcu.PA3 to=display.dc
+    connect output from=mcu.PA2 to=display.rst
+    connect pwm {
+        from mcu node=PA1
+        to display.bl
+    }
+    circuit display.spi.sck name="display/clk"
+    circuit display.spi.mosi name="display/din"
+    circuit display.cs name="display/cs"
+    circuit display.dc name="display/dc"
+    circuit display.rst name="display/rst"
+    circuit display.bl name="display/bl"
+
+    // --- Lands --------------------------------------------------------------------------------
+    //
+    // The reference, because a dead reference is a dead CAN node with no other symptom. The DCC
+    // waveform and its enable: the port carries A and B, so the waveform pad splits every fault
+    // across the transceiver — the MCU never made it, or the driver never carried it — and DE is
+    // its companion because a perfect waveform on a dead pair is a direction-line fault, invisible
+    // from both. The readback is inferable from those two and gets no pad. The rails' lands: VPWR
+    // has none, because a screw terminal takes a meter lead beside the wire; VLINK lands on a jack
+    // that has the star cable in it while anything is worth measuring, so it gets a loop, and so
+    // does the one pour.
+    scope tp {
+        place test-point hse at=osc.out package=pad designator=HSE \
+            note="the 40 MHz reference into OSC_IN — dead here is a dead CAN node with no other symptom"
+        place test-point dcc-txd at=backbone.dcc-txd package=pad designator=DCC_TX \
+            note="the DCC sync, logic side — the waveform this node puts on the star; the port's A/B is the other side of the driver"
+        place test-point dcc-de at=backbone.dcc-de package=pad designator=DCC_DE \
+            note="driver enable — a good waveform on tp/dcc-txd with a dead pair is this line's fault"
+        place test-point vlink at=rail.vlink.rail package=loop designator="LNK+" \
+            note="the switched backbone rail — the port jack has the star cable in it while anything is worth measuring"
+        place test-point gnd at=rail.vpwr.gnd package=loop designator=GND \
+            note="board ground — one pour on this board, and this is the loop a scope spring lands on"
+    }
+
+    // --- What holds the board, and what finds it -------------------------------------------------
+    //
+    // The same four corners and three marks every node carries, so this board shares the family's
+    // outline, standoffs and case. Unplated: the screws hold the board and carry nothing — and on
+    // the one node whose ground *is* the star's reference, bonding that reference to the standoffs
+    // at four points would hand the case a return path the wiring never asked for.
+    place mounting-hole "mount/nw"
+    place mounting-hole "mount/ne"
+    place mounting-hole "mount/sw"
+    place mounting-hole "mount/se"
+    place fiducial "fid/0"
+    place fiducial "fid/1"
+    place fiducial "fid/2"
+
+    // --- What the board deliberately leaves unspent ----------------------------------------------
+    //
+    // On a board a dropped join and a spare pin are the same netlist entry, so the difference is
+    // *stated*. No GPIO header: the case for one is always a fixture's, and a header promises pins
+    // the design has no other use for, where a wired-but-unused pin looks spent. The wired pins
+    // are grouped by package edge on purpose, for the layout rather than for the mux: PA15,
+    // PD0–PD3 and PB3–PB5 (pads 37–44, the top edge — the FDCAN1 pair with a mode line either side
+    // of it, the link enable, then the DCC driver's three lines, where the backbone port is),
+    // PB6/PB7 (pads 45–46 — the monitor's alert facing the monitor, and the light bar's stream
+    // facing the pixels), PB8/PB9 (pads 47–48 — the screen bus on I2C1, facing the vertical Qwiic
+    // land), PB13/PB14 (pads 25–26 — the expansion bus on I2C2 facing the side land), PA1–PA5 and
+    // PA7 (pads 12–16 and 18 — the unfitted display header: SPI1's clock and data, its select, DC,
+    // RST and a TIM2 backlight; PA6 between them is SPI1's MISO, which a write-only header has no
+    // conductor for, so the link leaves it unbound). The rest sit where the part put them: PA9/PA10 (the
+    // console's USART1, the bootloader's pair), PA13/PA14 (SWD), PF0 (HSE) and PF2 (reset).
+    nc mcu.PA0 mcu.PA8 mcu.PA11 mcu.PA12 \
+       mcu.PB0 mcu.PB1 mcu.PB2 mcu.PB10 mcu.PB11 mcu.PB12 mcu.PB15 \
+       mcu.PC6 mcu.PC7 mcu.PC13 mcu.PC14 mcu.PC15 mcu.PF3 \
+        note="spare — the C092's unspent GPIO, brought to no land: every pin the board does not use for something. Reaching a spare pin means adding a land on purpose rather than finding one already fitted"
+}

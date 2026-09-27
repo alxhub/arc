@@ -1,0 +1,227 @@
+// ARC-DST-01x8: eight direct controlled bridge districts, one track shunt.
+use "@stackup/passives"
+use "@stackup/types"
+use "@stackup/mechanical"
+use "@stackup/connector/swd"
+use "@stackup/micro/stm32g0b1"
+use "@stackup/clock/ecs2520mv"
+use "@stackup/power/brick/r78k"
+use "@stackup/logic/lvc1g86"
+use "@stackup/logic/lvc1g3157"
+use "@stackup/discrete/led/led"
+use "../../shared/connectors.kdl"
+use "../../shared/arc-link.kdl"
+use "./entry.kdl"
+use "./rail.kdl"
+use "./district.kdl"
+use "./adc.kdl"
+use "./thermal.kdl"
+
+design dst-01x8 {
+    stock {
+        packages imperial="0402"
+        derating voltages="16V 25V 50V"
+        tracks "0.2mm 0.25mm 0.3mm 0.4mm 0.8mm 1.0mm 2.0mm"
+    }
+    place district-entry dc
+    place r78k3v3 logic in=dc.vpwr designator="3V3_BUCK" { with emc-class-b }
+    place district-rail track vpwr=dc.vpwr logic=logic.out
+    place district-thermal thermal logic=logic.out
+    // Every MCU pin is spent; omit the unconsumed link-good optocoupler.
+    place arc-link link host=logic.out { with jacks; with dcc; without flag }
+    place indicator v3v3-led rail=logic.out r="680Ω" designator=REG
+    place test-point tp-gnd at=dc.vpwr.gnd package=loop designator=GND
+
+    place stm32g0b1 mcu vdd=logic.out package=lqfp64 designator=STM32
+    place ecs2520mv osc vdd=logic.out value="40MHz"
+    circuit osc.out mcu.PF0 name="hse"
+    place test-point tp-hse at=mcu.PF0 package=pad designator=HSE
+    circuit mcu.VREF+ logic.out.rail
+    connect can { from mcu rx=PB8 tx=PB9; to link }
+    place i2c-pull-ups mon-pulls rail=logic.out
+    connect i2c { from mcu sda=PB7 scl=PB6; to track.i2c }
+    connect i2c from=track.i2c to=thermal.i2c
+    connect i2c from=track.i2c to=mon-pulls
+    circuit track.alert mcu.PB4 name="nALERT"
+    place test-point tp-sda at=track.i2c.sda package=pad designator=SDA
+    place test-point tp-scl at=track.i2c.scl package=pad designator=SCL
+
+    place resistor Rdcc value="33Ω" intent=series
+    circuit link.dcc-rxd Rdcc name="DCC_RO"
+    circuit Rdcc.b mcu.PA15 name="DCC"
+    place test-point tp-dcc at=mcu.PA15 package=pad designator=DCC
+    circuit link.dcc-txd logic.out.rail
+    circuit mcu.PD0 name="DCC_PROG"
+    place test-point tp-prog at=mcu.PD0 package=pad designator=PRGM
+    place swd-header swd vref=logic.out designator=SWD
+    connect swd { from mcu swdio=PA13 swclk=PA14 nrst=PF2; to swd }
+    circuit swd.swd.nrst name="nrst"
+    nc mcu.PF1 note="unused OSC_OUT in HSE bypass mode"
+    // District 0: all six controls and measurements are MCU pins.
+    place district d0 drive=track.vtrk logic=logic.out
+    circuit track.vref d0.vref
+    place lvc1g86 xor0 vcc=logic.out
+    place lvc1g3157 mux0 vcc=logic.out
+    circuit mcu.PA15 xor0.A
+    circuit mcu.PB11 xor0.B name="PHASE0"
+    circuit xor0.Y mux0.Y0 name="STREAM0"
+    circuit mcu.PD0 mux0.Y1
+    circuit mcu.PB12 mux0.S d0.prog name="PROG0"
+    place resistor Rterm0 value="22Ω" intent=series
+    circuit mux0.Z Rterm0 d0.signal name="SIGNAL0"
+    connect pwm { from mcu node=PB1; to d0.gate }
+    circuit mcu.PB10 d0.sleep
+    circuit mcu.PB2 d0.fault
+    place district-adc adc0 logic=logic.out sense=d0.sense
+    connect analog from=mcu.PC5 to=adc0.adc
+    place rail-output rail0 designator=TRK1
+    circuit d0.a rail0.A
+    circuit d0.b rail0.B
+    // District 1: all six controls and measurements are MCU pins.
+    place district d1 drive=track.vtrk logic=logic.out
+    circuit track.vref d1.vref
+    place lvc1g86 xor1 vcc=logic.out
+    place lvc1g3157 mux1 vcc=logic.out
+    circuit mcu.PA15 xor1.A
+    circuit mcu.PB15 xor1.B name="PHASE1"
+    circuit xor1.Y mux1.Y0 name="STREAM1"
+    circuit mcu.PD0 mux1.Y1
+    circuit mcu.PA8 mux1.S d1.prog name="PROG1"
+    place resistor Rterm1 value="22Ω" intent=series
+    circuit mux1.Z Rterm1 d1.signal name="SIGNAL1"
+    connect pwm { from mcu node=PB0; to d1.gate }
+    circuit mcu.PB14 d1.sleep
+    circuit mcu.PB13 d1.fault
+    place district-adc adc1 logic=logic.out sense=d1.sense
+    connect analog from=mcu.PC4 to=adc1.adc
+    place rail-output rail1 designator=TRK2
+    circuit d1.a rail1.A
+    circuit d1.b rail1.B
+    // District 2: all six controls and measurements are MCU pins.
+    place district d2 drive=track.vtrk logic=logic.out
+    circuit track.vref d2.vref
+    place lvc1g86 xor2 vcc=logic.out
+    place lvc1g3157 mux2 vcc=logic.out
+    circuit mcu.PA15 xor2.A
+    circuit mcu.PD9 xor2.B name="PHASE2"
+    circuit xor2.Y mux2.Y0 name="STREAM2"
+    circuit mcu.PD0 mux2.Y1
+    circuit mcu.PA10 mux2.S d2.prog name="PROG2"
+    place resistor Rterm2 value="22Ω" intent=series
+    circuit mux2.Z Rterm2 d2.signal name="SIGNAL2"
+    connect pwm { from mcu node=PC6; to d2.gate }
+    circuit mcu.PD8 d2.sleep
+    circuit mcu.PA9 d2.fault
+    place district-adc adc2 logic=logic.out sense=d2.sense
+    connect analog from=mcu.PA5 to=adc2.adc
+    place rail-output rail2 designator=TRK3
+    circuit d2.a rail2.A
+    circuit d2.b rail2.B
+    // District 3: all six controls and measurements are MCU pins.
+    place district d3 drive=track.vtrk logic=logic.out
+    circuit track.vref d3.vref
+    place lvc1g86 xor3 vcc=logic.out
+    place lvc1g3157 mux3 vcc=logic.out
+    circuit mcu.PA15 xor3.A
+    circuit mcu.PA6 xor3.B name="PHASE3"
+    circuit xor3.Y mux3.Y0 name="STREAM3"
+    circuit mcu.PD0 mux3.Y1
+    circuit mcu.PA7 mux3.S d3.prog name="PROG3"
+    place resistor Rterm3 value="22Ω" intent=series
+    circuit mux3.Z Rterm3 d3.signal name="SIGNAL3"
+    connect pwm { from mcu node=PC7; to d3.gate }
+    circuit mcu.PA12 d3.sleep
+    circuit mcu.PA11 d3.fault
+    place district-adc adc3 logic=logic.out sense=d3.sense
+    connect analog from=mcu.PA4 to=adc3.adc
+    place rail-output rail3 designator=TRK4
+    circuit d3.a rail3.A
+    circuit d3.b rail3.B
+    // District 4: all six controls and measurements are MCU pins.
+    place district d4 drive=track.vtrk logic=logic.out
+    circuit track.vref d4.vref
+    place lvc1g86 xor4 vcc=logic.out
+    place lvc1g3157 mux4 vcc=logic.out
+    circuit mcu.PA15 xor4.A
+    circuit mcu.PD4 xor4.B name="PHASE4"
+    circuit xor4.Y mux4.Y0 name="STREAM4"
+    circuit mcu.PD0 mux4.Y1
+    circuit mcu.PD3 mux4.S d4.prog name="PROG4"
+    place resistor Rterm4 value="22Ω" intent=series
+    circuit mux4.Z Rterm4 d4.signal name="SIGNAL4"
+    connect pwm { from mcu node=PC8; to d4.gate }
+    circuit mcu.PD2 d4.sleep
+    circuit mcu.PD1 d4.fault
+    place district-adc adc4 logic=logic.out sense=d4.sense
+    connect analog from=mcu.PA3 to=adc4.adc
+    place rail-output rail4 designator=TRK5
+    circuit d4.a rail4.A
+    circuit d4.b rail4.B
+    // District 5: all six controls and measurements are MCU pins.
+    place district d5 drive=track.vtrk logic=logic.out
+    circuit track.vref d5.vref
+    place lvc1g86 xor5 vcc=logic.out
+    place lvc1g3157 mux5 vcc=logic.out
+    circuit mcu.PA15 xor5.A
+    circuit mcu.PB3 xor5.B name="PHASE5"
+    circuit xor5.Y mux5.Y0 name="STREAM5"
+    circuit mcu.PD0 mux5.Y1
+    circuit mcu.PB5 mux5.S d5.prog name="PROG5"
+    place resistor Rterm5 value="22Ω" intent=series
+    circuit mux5.Z Rterm5 d5.signal name="SIGNAL5"
+    connect pwm { from mcu node=PC9; to d5.gate }
+    circuit mcu.PD6 d5.sleep
+    circuit mcu.PD5 d5.fault
+    place district-adc adc5 logic=logic.out sense=d5.sense
+    connect analog from=mcu.PA2 to=adc5.adc
+    place rail-output rail5 designator=TRK6
+    circuit d5.a rail5.A
+    circuit d5.b rail5.B
+    // District 6: all six controls and measurements are MCU pins.
+    place district d6 drive=track.vtrk logic=logic.out
+    circuit track.vref d6.vref
+    place lvc1g86 xor6 vcc=logic.out
+    place lvc1g3157 mux6 vcc=logic.out
+    circuit mcu.PA15 xor6.A
+    circuit mcu.PC13 xor6.B name="PHASE6"
+    circuit xor6.Y mux6.Y0 name="STREAM6"
+    circuit mcu.PD0 mux6.Y1
+    circuit mcu.PC14 mux6.S d6.prog name="PROG6"
+    place resistor Rterm6 value="22Ω" intent=series
+    circuit mux6.Z Rterm6 d6.signal name="SIGNAL6"
+    connect pwm { from mcu node=PC10; to d6.gate }
+    circuit mcu.PC12 d6.sleep
+    circuit mcu.PC15 d6.fault
+    place district-adc adc6 logic=logic.out sense=d6.sense
+    connect analog from=mcu.PA1 to=adc6.adc
+    place rail-output rail6 designator=TRK7
+    circuit d6.a rail6.A
+    circuit d6.b rail6.B
+    // District 7: all six controls and measurements are MCU pins.
+    place district d7 drive=track.vtrk logic=logic.out
+    circuit track.vref d7.vref
+    place lvc1g86 xor7 vcc=logic.out
+    place lvc1g3157 mux7 vcc=logic.out
+    circuit mcu.PA15 xor7.A
+    circuit mcu.PC2 xor7.B name="PHASE7"
+    circuit xor7.Y mux7.Y0 name="STREAM7"
+    circuit mcu.PD0 mux7.Y1
+    circuit mcu.PC3 mux7.S d7.prog name="PROG7"
+    place resistor Rterm7 value="22Ω" intent=series
+    circuit mux7.Z Rterm7 d7.signal name="SIGNAL7"
+    connect pwm { from mcu node=PC11; to d7.gate }
+    circuit mcu.PC1 d7.sleep
+    circuit mcu.PC0 d7.fault
+    place district-adc adc7 logic=logic.out sense=d7.sense
+    connect analog from=mcu.PA0 to=adc7.adc
+    place rail-output rail7 designator=TRK8
+    circuit d7.a rail7.A
+    circuit d7.b rail7.B
+    place mounting-hole "mount/nw"
+    place mounting-hole "mount/ne"
+    place mounting-hole "mount/sw"
+    place mounting-hole "mount/se"
+    place fiducial "fid/0"
+    place fiducial "fid/1"
+    place fiducial "fid/2"
+}

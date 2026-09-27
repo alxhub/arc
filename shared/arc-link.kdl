@@ -1,0 +1,199 @@
+// arc's backbone barrier, as an isolated node carries it: the isolated CAN transceiver, the
+// floating 5 V converter that runs its bus side, the lamp that is that converter's preload, the
+// optocoupler that reports the link rail home, and the port — on the six-way screw block, or on
+// two RJ45 jacks. Ported from `shared::arc_link`.
+//
+// What the port is testing:
+//
+// - **A block with features.** The Rust sheet takes three options — the body the port lands on,
+//   whether the backbone-good flag is placed, whether the RS-485 isolator is. Two of them are
+//   features here: `jacks` is asked for (`with jacks`) and `screw` follows from its absence;
+//   `flag` is on unless a node says `without flag`. The `dcc` feature adds the ISO1430
+//   receiver for the district board while leaving the other nodes' link unchanged.
+// - **An isolated section with no port for its rail.** The backbone rail arrives on the port and
+//   goes nowhere but the brick: it is sourced here, on its own return, and nothing outside the
+//   block can reach it. In Rust that was `Power::supply_isolated`; here it is `set` on the
+//   brick's input line — a voltage stated on a net the block never exports — and the port
+//   feature's `circuit`s onto it. The board's ground and the island's are two nets because
+//   nothing joins them.
+// - **A fact crossing the barrier.** The flag block's `sensed` and `observer` are two power ports
+//   on two returns, and the only thing between them is a part with no electrical path through it.
+
+use "@stackup/passives"
+use "@stackup/mechanical"
+use "@stackup/bus/can/iso1044"
+use "@stackup/bus/rs485/iso1430"
+use "@stackup/isolator/fodm217"
+use "@stackup/power/brick/r78e"
+use "@stackup/discrete/led/led"
+use "./connectors.kdl"
+
+block arc-link {
+    // The host-side rail the isolator's logic side and the flag's pull-up reference — what the
+    // sheet demands from the board.
+    port host type=power
+    // The MCU's end of the CAN logic link: the isolator's `can`, seen through this block.
+    port fdcan type=can
+    // The optional recovered DCC stream and transceiver direction pins.
+    port dcc-rxd
+    port dcc-txd
+    port dcc-de
+    port dcc-a
+    port dcc-b
+    // The backbone-good flag — **low while the link rail is up**, pulled to the host's 3.3 V when
+    // it is not. The link rail exists exactly when the backbone feeds the converter, so this one
+    // bit answers the question the master most wants answered when the bus goes quiet: barrier
+    // alive but bus dead, or backbone power gone. An input pin reads it; the pull-up is the
+    // `flag` feature's, and on a node placed `without flag` this port reaches nothing.
+    port link-good
+
+    // --- The link-side 5 V converter, floating on its own ground ------------------------------
+    //
+    // A brick rather than a buck, and the reason is the *island* rather than the part count: a
+    // discrete regulator's switching loop would sit a few millimetres from the isolation gap on
+    // every board that carries this sheet, coupling its edges through the barrier capacitance of
+    // the two things whose CMTI is the spec being bought. Recom's loop is inside Recom's case, it
+    // is the same on every node, and it is one land to place instead of a layout to re-derive.
+    // What it gives up — an enable pin, and any way to ask whether the rail came up — the lamp and
+    // the flag below answer.
+    //
+    // Filtered, and this is the sheet with the strongest claim on it: the brick's input is not a
+    // board-local rail. VLINK arrives on a field cable from the wiring centre, so the input line
+    // is metres of copper with the switcher's own negative input impedance on the end of it, and
+    // it is simultaneously the conducted-emissions port — everything this brick puts back onto its
+    // input goes straight out onto the bus every other node shares. The filter is Recom's own
+    // EN55032 Class B list for this member. LNK_BUCK on the silk: a person with a meter goes
+    // looking for the brick the isolated rail comes out of.
+    place r78e5v0-0a5 buck designator=LNK_BUCK {
+        with emc-class-b
+    }
+
+    // The backbone rail as the cable brings it: BACKBONE_V, 12–18 V — the N-scale setting less
+    // the cable allowance, up to the HO rail with an installer's trim above it. Stated on the
+    // brick's input, because that input is the one thing on the rail: it reaches no port of this
+    // block, and its return is the island's ground, which is what makes "the backbone's ground"
+    // and "this board's ground" two nodes rather than two names for one.
+    set buck.in.rail net.voltage min="12V" max="18V"
+    set buck.in.rail net.name "VLINK"
+    set buck.in.gnd net.name "VLINK_GND"
+    set buck.out.rail net.name "V5_LINK"
+
+    // --- The CAN isolator ---------------------------------------------------------------------
+    //
+    // Its logic side on the host rail, its bus side on the brick's 5 V; its host-side TXD/RXD are
+    // this block's `fdcan`, and its CANH/CANL go to the port below. CAN on the silk.
+    place iso1044 can host=host link=buck.out designator=CAN
+    circuit fdcan.tx can.can.tx
+    circuit fdcan.rx can.can.rx
+
+    // District nodes receive the sync pair through a second isolated device. The
+    // receiver is always enabled; an undriven DE cannot seize the backbone.
+    block dcc {
+        place iso1430 rs485 host=host link=buck.out designator=DCC_SYNC
+        circuit rs485.RE host.gnd
+        place pull-down de-pulldown node=rs485.de rail=host value="10kΩ"
+        circuit dcc-rxd rs485.rxd
+        circuit dcc-txd rs485.txd
+        circuit dcc-de rs485.de
+        circuit dcc-a rs485.A
+        circuit dcc-b rs485.B
+    }
+
+    // --- The link rail's lamp, and its minimum load ----------------------------------------
+    //
+    // Two parts doing both jobs. 10 mA is the minimum load the 0.5 A brick asks for — below it
+    // the converter is unharmed but stops promising its ripple figures — and it is met **on its
+    // own**: the isolator's bus side draws a few milliamps with the bus idle, but "a few" is a
+    // number read off a datasheet for a state the design cannot hold it to, so the preload
+    // satisfies the minimum by itself and the isolator's idle draw is margin. It is drawn through
+    // an LED rather than a bare resistor because this sheet gave up its power-good when it took
+    // the brick: nothing on the isolated side could say the rail had come up, and a probe on a
+    // floating island is a poor way to ask. The current was going to be burned either way; this
+    // way it is visible. 300 Ω is (5 V − 2 V) / 10 mA on E24, and 30 mW continuously is why the
+    // indicator block puts its ballast in an 0805.
+    place indicator link-led rail=buck.out r="300Ω" limit="12mA" resistor-body="Resistor_SMD:R_0805_2012Metric" designator=LNK \
+        note="the link rail's lamp, and the brick's 10 mA preload in the same two parts"
+
+    // --- The backbone-good flag ---------------------------------------------------------------
+    //
+    // The same fact the lamp states, reported *home*: the link rail lights an optocoupler whose
+    // transistor pulls a host-side flag low. The brick only makes its 5 V when the backbone feeds
+    // it, so "the rail is up" and "the backbone is present at my port" are one flag — the sheet's
+    // second crossing, beside the isolator, carried as light because a fact needs no CMTI budget.
+    // 2 mA on the link rail, on top of the preload rather than counted toward it.
+    //
+    // A feature, on by default, for a node with no pin to read it on: such a node would still pay
+    // the part, its isolation and 2 mA of the link rail for a fact nothing on the board takes in,
+    // and gives up the one bit that tells backbone-power-gone from bus-dead — a claim that
+    // something else it hears, the supply node reporting its rail over CAN, answers the same
+    // question.
+    block flag {
+        default
+        place rail-flag good sensed=buck.out observer=host out=link-good
+    }
+
+    // --- The rail's lands ---------------------------------------------------------------------
+    //
+    // The third way the island reports, after the lamp (for a person) and the flag (for the
+    // host). Neither answers what a bench asks next, which is *how* alive: the brick has no sense
+    // pin and no power-good, so without a land the only place to read its output is a part's leg.
+    // The ground loop beside it is the island's reference; the only other ground land on the
+    // island is the port, which has the field cable in it while anything is worth measuring. The
+    // link's own lands are on the isolated side and must not be borrowed for board-side signals.
+    scope tp {
+        place test-point rail at=buck.out.rail package=pad designator="LNK+" \
+            note="the isolated 5 V, at the brick's output — it reaches no connector, and the brick has no power-good to ask instead"
+        place test-point gnd at=buck.out.gnd package=loop designator="LNK-" \
+            note="link ground — the island's reference for a scope spring or a crocodile; the only other ground land on the island is the port with the cable in it"
+    }
+
+    // --- The backbone port --------------------------------------------------------------------
+    //
+    // One port, on one of two bodies. The contract is the same either way — six conductors,
+    // named the same — so the choice reaches no further than the footprint and the pad map. What
+    // differs is what a person does at the node.
+    //
+    // The DCC pair is tied through and crosses nothing on a node without the RS-485 isolator: a
+    // signal aspect or a gate arm has no use for the layout's bit clock. On two jacks the pair
+    // still passes, which is what lets a run chain past a hub to a district beyond it with its
+    // sync intact; on the screw block its two positions have nothing behind them, and say so.
+
+    // Two 8P8C jacks in parallel — one port on two bodies. A lead arrives on either and a second
+    // lead carries the same six conductors on to the next node, so a run of nodes can be a chain
+    // instead of six drops back to a hub. Still not a hub, and it terminates nothing: the wiring
+    // centre terminates the buses, and a pass-through can sit mid-trunk, where a terminator is
+    // the classic CAN installation fault. The conductors are named once, because they are one
+    // node. LNK1/LNK2 on the silk: a cable goes in either, so the legend is the bus's name rather
+    // than a connector number.
+    block jacks {
+        place backbone-jack a reference=LNK \
+            note="backbone jack — the rail on pairs 1/2 and 3/6, CAN on 4/5, DCC on 7/8; in parallel with the other, so a run passes through"
+        place backbone-jack b reference=LNK \
+            note="the same port on a second body — a lead carries the run on to the next node"
+        circuit a.VLINK b.VLINK buck.in.rail
+        circuit a.GND b.GND buck.in.gnd
+        circuit a.CANH b.CANH can.CANH name="CANH"
+        circuit a.CANL b.CANL can.CANL name="CANL"
+        circuit a.DCC_A b.DCC_A dcc-a name="DCC_A"
+        circuit a.DCC_B b.DCC_B dcc-b name="DCC_B"
+    }
+
+    // The six-way screw block: field wire, cut to length and landed once, and a node with one
+    // cable on it — the topology is entirely the wiring centre's. What a node gets if it says
+    // nothing.
+    block screw {
+        when "!jacks"
+        place backbone-port in designator=LINK \
+            note="backbone port — VLINK, GND, CANH, CANL, DCC_A, DCC_B, to the wiring centre"
+        circuit in.VLINK buck.in.rail
+        circuit in.GND buck.in.gnd
+        circuit in.CANH can.CANH name="CANH"
+        circuit in.CANL can.CANL name="CANL"
+        circuit in.DCC_A dcc-a
+        circuit in.DCC_B dcc-b
+        block no-dcc {
+            when "!dcc"
+            nc in.DCC_A in.DCC_B note="no DCC role on this node — the sync pair lands and crosses nothing"
+        }
+    }
+}

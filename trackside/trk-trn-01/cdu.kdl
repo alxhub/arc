@@ -1,0 +1,30 @@
+use "@stackup/passives"
+use "../../shared/lamp.kdl"
+
+// Capacitor discharge unit: four 24.9 Ω, 2 W charge resistors in series
+// limit initial recharge to about 180 mA. Two 3.3 mF, 35 V cans store energy
+// for throws; a split placement provides low impedance at both bridge groups.
+block turnout-cdu {
+    port vpwr type=power
+    port bank type=power {
+        set net.voltage min="12V" max="18V"
+        line rail { set net.name "BANK" }
+    }
+    port sense type=analog
+
+    place resistor charge0 value="24.9Ω" intent=series footprint="Resistor_SMD:R_2512_6332Metric" note="2 W charge resistor, segment 1 of 4"
+    place resistor charge1 value="24.9Ω" intent=series footprint="Resistor_SMD:R_2512_6332Metric" note="2 W charge resistor, segment 2 of 4"
+    place resistor charge2 value="24.9Ω" intent=series footprint="Resistor_SMD:R_2512_6332Metric" note="2 W charge resistor, segment 3 of 4"
+    place resistor charge3 value="24.9Ω" intent=series footprint="Resistor_SMD:R_2512_6332Metric" note="2 W charge resistor, segment 4 of 4"
+    circuit vpwr.rail charge0 charge1 charge2 charge3 bank.rail
+    circuit vpwr.gnd bank.gnd
+
+    place bulk reservoir0 node=bank.rail rail=bank value="3.3mF" \
+        footprint="Capacitor_THT:CP_Radial_D16.0mm_P7.50mm" note="35 V electrolytic, 3.3 mF"
+    place bulk reservoir1 node=bank.rail rail=bank value="3.3mF" \
+        footprint="Capacitor_THT:CP_Radial_D16.0mm_P7.50mm" note="35 V electrolytic, 3.3 mF"
+    place bypass hf0 node=bank.rail rail=bank value="100nF"
+    place bypass hf1 node=bank.rail rail=bank value="100nF"
+    place rail-sense monitor rail=bank
+    circuit monitor.tap sense
+}

@@ -1,0 +1,70 @@
+use "@stackup/passives"
+use "@stackup/connector/header"
+use "@stackup/logic/ahct125"
+
+block servos {
+    port rail type=power
+    port enable
+    port p1 type=pwm
+    port p2 type=pwm
+    port p3 type=pwm
+    port p4 type=pwm
+    port p5 type=pwm
+    port p6 type=pwm
+    port p7 type=pwm
+    port p8 type=pwm
+
+    // Both quad buffers share one active-low output enable. The 100 kΩ pull-up
+    // keeps all eight outputs disabled during reset; a pull-down at each header
+    // makes a disabled output 0 V rather than a floating servo input.
+    place ahct125 quad1 vcc=rail
+    place ahct125 quad2 vcc=rail
+    place pull-up enable-pullup node=enable rail=rail value="100kΩ"
+    circuit enable quad1.A_OE quad1.B_OE quad1.C_OE quad1.D_OE \
+        quad2.A_OE quad2.B_OE quad2.C_OE quad2.D_OE
+
+    place conn-1x3 srv1 designator=SRV1
+    place conn-1x3 srv2 designator=SRV2
+    place conn-1x3 srv3 designator=SRV3
+    place conn-1x3 srv4 designator=SRV4
+    place conn-1x3 srv5 designator=SRV5
+    place conn-1x3 srv6 designator=SRV6
+    place conn-1x3 srv7 designator=SRV7
+    place conn-1x3 srv8 designator=SRV8
+
+    circuit p1 quad1.A_A
+    circuit p2 quad1.B_A
+    circuit p3 quad1.C_A
+    circuit p4 quad1.D_A
+    circuit p5 quad2.A_A
+    circuit p6 quad2.B_A
+    circuit p7 quad2.C_A
+    circuit p8 quad2.D_A
+
+    circuit quad1.A_Y srv1.1
+    circuit quad1.B_Y srv2.1
+    circuit quad1.C_Y srv3.1
+    circuit quad1.D_Y srv4.1
+    circuit quad2.A_Y srv5.1
+    circuit quad2.B_Y srv6.1
+    circuit quad2.C_Y srv7.1
+    circuit quad2.D_Y srv8.1
+    place pull-down pd1 node=srv1.1 rail=rail value="100kΩ"
+    place pull-down pd2 node=srv2.1 rail=rail value="100kΩ"
+    place pull-down pd3 node=srv3.1 rail=rail value="100kΩ"
+    place pull-down pd4 node=srv4.1 rail=rail value="100kΩ"
+    place pull-down pd5 node=srv5.1 rail=rail value="100kΩ"
+    place pull-down pd6 node=srv6.1 rail=rail value="100kΩ"
+    place pull-down pd7 node=srv7.1 rail=rail value="100kΩ"
+    place pull-down pd8 node=srv8.1 rail=rail value="100kΩ"
+
+    circuit rail.rail srv1.2 srv2.2 srv3.2 srv4.2 srv5.2 srv6.2 srv7.2 srv8.2
+    circuit rail.gnd srv1.3 srv2.3 srv3.3 srv4.3 srv5.3 srv6.3 srv7.3 srv8.3
+
+    // The 100 µF electrolytic is beside the eight headers. The R-78E permits
+    // 220 µF total output capacitance; this and the bell and bypass capacitors
+    // must remain below that ceiling. Servo demand assumes 250 mA per moving
+    // arm and limits simultaneous motion in firmware.
+    place bulk reservoir node=rail.rail rail=rail value="100µF" \
+        footprint="Capacitor_SMD:CP_Elec_6.3x5.8" note="servo step-current reservoir at headers"
+}

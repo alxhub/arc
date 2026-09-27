@@ -1,0 +1,62 @@
+use "@stackup/connector/uno-host-socket"
+use "@stackup/connector/uno-shield-header"
+
+// CSB1 below, motor shield above. Most Uno positions pass straight through.
+// A4/A5 and D8/D9 are intercepted for the local UART and fault/brake loop.
+block csb1-host {
+    port v5 type=power {
+        set net.voltage "5V"
+    }
+    port tx-host
+    port rx-host
+    port track-signal
+    port booster-input
+    port reset
+    port brake-c
+    port brake-d
+    port fault-c
+    port fault-d
+
+    // The lower land uses the pins-only footprint: a stacking socket here
+    // would let the shield bypass the four intercepted positions.
+    place uno-shield-header lower package=pins designator=CSB1
+    place uno-host-socket upper designator=SHIELD
+    circuit lower.P5V upper.P5V v5.rail
+    circuit lower.GND upper.GND v5.gnd
+
+    circuit lower.IOREF upper.IOREF
+    circuit lower.P3V3 upper.P3V3
+    circuit lower.VIN upper.VIN
+    circuit lower.AREF upper.AREF
+    circuit lower.SDA upper.SDA
+    circuit lower.SCL upper.SCL
+    circuit lower.A0 upper.A0
+    circuit lower.A1 upper.A1
+    circuit lower.A2 upper.A2
+    circuit lower.A3 upper.A3
+    circuit lower.D0 upper.D0
+    circuit lower.D1 upper.D1
+    circuit lower.D2 upper.D2
+    circuit lower.D3 upper.D3
+    circuit lower.D4 upper.D4
+    circuit lower.D5 upper.D5
+    circuit lower.D6 upper.D6
+    circuit lower.D10 upper.D10
+    circuit lower.D11 upper.D11
+    circuit lower.D13 upper.D13
+
+    circuit lower.D12 upper.D12 track-signal
+    circuit lower.D7 upper.D7 booster-input
+    circuit lower.RESET upper.RESET reset
+
+    // Freed ESP32 GPIO18/GPIO17 form a UART. Its console pins D0/D1 stay
+    // welded through to the motor shield, never used for this peer link.
+    circuit lower.A4 tx-host
+    circuit lower.A5 rx-host
+    // GPIO12 (D8) is the ESP32 flash-voltage strap: leave it unconnected.
+    nc lower.D8 lower.D9
+    circuit upper.D9 brake-c
+    circuit upper.D8 brake-d
+    circuit upper.A4 fault-c
+    circuit upper.A5 fault-d
+}

@@ -1,0 +1,87 @@
+// ARC-TRK-TBL-01xK. The DCC feed is independent of the LIN bus return.
+use "@stackup/passives"
+use "@stackup/types"
+use "@stackup/mechanical"
+use "@stackup/connector/qwiic"
+use "@stackup/connector/swd"
+use "@stackup/micro/stm32c092"
+use "../../shared/r78e-1a-class-a.kdl"
+use "@stackup/power/ldo/ap2112k"
+use "@stackup/discrete/led/led"
+use "../../shared/lin.kdl"
+use "../../shared/connectors.kdl"
+use "./table.kdl"
+
+design trk-tbl-01xk {
+    stock {
+        packages imperial="0402"
+        derating voltages="16V 25V 50V"
+        tracks "0.2mm 0.25mm 0.3mm 0.4mm 0.8mm 1.0mm 2.0mm"
+    }
+    place lin-node node
+    // Local 5 V for Kato's motors; cable V5 remains pass-through only.
+    place r78e1a-class-a v5 in=node.vpwr
+    place stm32c092 mcu vdd=node.v3v3 package=lqfp32 designator=STM32
+    place table table drive=v5.out logic=node.v3v3
+    place indicator reg-led rail=node.v3v3 designator=REG
+    place indicator v5-led rail=v5.out r="1.5kΩ" designator=V5
+
+    // USART1 LIN on PB6/PB7, physical direction preserved at NCV7428.
+    circuit mcu.PB6 node.link.rx name="lin/txd"
+    circuit mcu.PB7 node.link.tx name="lin/rxd"
+
+    // TIM1 carries 20 kHz reference and both motor enables. PA8 is CH1,
+    // PB3 is CH2, PB1 is CH3N; firmware enables the latter on its own.
+    connect pwm { from mcu node=PA8; to table.vref-pwm }
+    connect pwm { from mcu node=PB3; to table.rotate-en }
+    connect pwm { from mcu node=PB1; to table.lock-en }
+    connect output from=mcu.PB4 to=table.rotate-ph
+    connect output from=mcu.PB0 to=table.lock-ph
+    connect analog from=mcu.PA0 to=table.rotate-sense
+    connect analog from=mcu.PA1 to=table.lock-sense
+    connect output from=mcu.PC6 to=table.sleep
+    circuit mcu.PA9 table.fault
+    circuit mcu.PA11 table.index
+    circuit mcu.PA15 table.home
+    circuit mcu.PA2 table.track-present name="track/present"
+
+    // A district's isolated track pair arrives at the pluggable terminal
+    // and goes to Kato's pins 7/8. Crossing A/B avoids trace crossover;
+    // DCC has no polarity. No connection to board power or return.
+    place rail-output feed package=screw designator=DCC_IN
+    circuit feed.A table.track-b
+    circuit feed.B table.track-a
+
+    // Switched I²C expansion rail off local 5 V, for an optional angle sensor.
+    scope expansion {
+        place ap2112k3v3 ldo in=v5.out designator=I2C_3V3 { without always-on }
+        place bulk Cbulk node=ldo.out.rail rail=ldo.out value="10µF" \
+            footprint="Capacitor_SMD:C_1210_3225Metric" note="hot-plug reservoir at Qwiic"
+        place pull-down en-pd node=ldo.en rail=ldo.out value="100kΩ"
+        place i2c-pull-ups pulls rail=ldo.out
+        place qwiic port vcc=ldo.out designator=I2C
+        connect output from=mcu.PA5 to=ldo.en
+        connect i2c { from mcu sda=PA6 scl=PA7; to port }
+        connect i2c from=port to=pulls
+    }
+
+    place swd-header swd vref=node.v3v3 designator=SWD
+    connect swd { from mcu swdio=PA13 swclk=PA14 nrst=PF2; to swd }
+    circuit node.reset swd.RESET name="nrst"
+    scope tp {
+        place test-point lin at=node.lin package=pad designator=LIN
+        place test-point index at=table.index package=pad designator=IDX
+        place test-point local5 at=v5.out.rail package=pad designator="5V"
+        place test-point v3v3 at=node.v3v3.rail package=pad designator="3V3"
+        place test-point gnd at=node.vpwr.gnd package=loop designator=GND
+    }
+    place mounting-hole "mount/nw"
+    place mounting-hole "mount/ne"
+    place mounting-hole "mount/sw"
+    place mounting-hole "mount/se"
+    place fiducial "fid/0"
+    place fiducial "fid/1"
+    place fiducial "fid/2"
+    nc mcu.PA3 mcu.PA4 mcu.PA10 mcu.PA12 mcu.PB2 mcu.PB5 mcu.PB8 mcu.PB9 \
+       mcu.PC14 mcu.PC15 note="unspent C092 GPIO"
+}

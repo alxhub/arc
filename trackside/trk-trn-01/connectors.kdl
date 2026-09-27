@@ -1,0 +1,23 @@
+// Two turnout machine triples. The COM positions return to the CDU bank,
+// keeping each throw pulse off the LIN cord's return conductor.
+part turnout-bank {
+    symbol "Connector_Generic:Conn_01x06"
+    reference J
+    description "Two A/COM/B turnout machine outputs"
+    manufacturer "Phoenix Contact"
+    order mpn="1710726" mouser="651-1710726"
+    pin A0 passive
+    pin COM0 passive
+    pin B0 passive
+    pin A1 passive
+    pin COM1 passive
+    pin B1 passive
+    package screw footprint="TerminalBlock_Phoenix:TerminalBlock_Phoenix_MKDS-1,5-6-5.08_1x06_P5.08mm_Horizontal" {
+        pad A0 1
+        pad COM0 2
+        pad B0 3
+        pad A1 4
+        pad COM1 5
+        pad B1 6
+    }
+}

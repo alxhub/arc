@@ -1,0 +1,40 @@
+// Shared rail monitor and current limit reference for all six bridges.
+use "@stackup/passives"
+use "@stackup/types"
+use "@stackup/mechanical"
+
+use "@stackup/sensor/current/ina226"
+
+block district-rail {
+    port vpwr type=power
+    port logic type=power
+    port vtrk type=power {
+        set net.voltage min="12V" max="18V"
+        line rail { set net.name "VTRK" }
+        line gnd
+    }
+    port i2c type=i2c
+    port alert
+    port vref
+
+    // The 5 mΩ 2512 shunt must be Vishay WSLP metal element, 1%, 3 W.
+    // The generic sense block cannot enforce manufacturer, tolerance or rating.
+    place ina226-sense monitor shunt="5mΩ" vs=logic i2c=i2c alert=alert designator=MON
+    circuit vpwr.rail monitor vtrk.rail
+    circuit vpwr.gnd vtrk.gnd
+    // One 220 µF low ESR polymer can per triple of bridges; 50 V derating.
+    place bulk res0 node=vtrk.rail rail=vtrk value="220µF" footprint="stackup:CP_Elec_10x16.5"
+    place bulk res1 node=vtrk.rail rail=vtrk value="220µF" footprint="stackup:CP_Elec_10x16.5"
+    place bypass hf0 node=vtrk.rail rail=vtrk value="100nF"
+    place bypass hf1 node=vtrk.rail rail=vtrk value="100nF"
+    place test-point tp-vtrk at=vtrk.rail package=pad designator=VTRK
+
+    place resistor Rvref-top value="9.76kΩ" intent=divider
+    place resistor Rvref-bottom value="30kΩ" intent=divider
+    circuit logic.rail Rvref-top.a
+    circuit Rvref-top.b Rvref-bottom.a vref name="VREF"
+    circuit Rvref-bottom.b logic.gnd
+    place bypass Cvref0 node=vref rail=logic value="100nF"
+    place bypass Cvref1 node=vref rail=logic value="100nF"
+    place test-point tp-vref at=vref package=pad designator=VREF
+}

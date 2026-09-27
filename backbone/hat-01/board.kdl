@@ -1,0 +1,127 @@
+use "@stackup/passives"
+use "@stackup/types"
+use "@stackup/mechanical"
+use "@stackup/connector/qwiic"
+use "@stackup/discrete/diode/tvs"
+use "@stackup/discrete/diode/diode"
+use "@stackup/discrete/led/led"
+use "@stackup/discrete/fet/buk9m53"
+use "@stackup/isolator/fodm217"
+use "@stackup/power/buck/tpsm53603"
+use "@stackup/power/ideal_diode/ltc4359"
+use "@stackup/power/ldo/ap2112k"
+use "@stackup/bus/can/mcp2518fd"
+use "../../shared/arc-link.kdl"
+use "./connectors.kdl"
+use "./host.kdl"
+
+block control-rail {
+    port vctl type=power
+}
+
+design hat-01 {
+    stock {
+        packages imperial="0402"
+        derating voltages="16V 25V 50V"
+        tracks "0.2mm 0.25mm 0.3mm 0.4mm 0.8mm 1.0mm 2.0mm"
+    }
+
+    // Power HAT: 5.1 V before the ideal diode gives about 5.07 V at the Pi.
+    // The 24 V control supply is unswitched, so this board remains alive while
+    // it opens or closes the layout's master contactor.
+    place pi-host host
+    set host.v5.rail net.voltage "5V"
+    set host.v5.rail net.name "V5"
+    set host.id-power.rail net.voltage "3.3V"
+    set host.id-power.rail net.name "VCC_ID"
+    circuit host.id-power.gnd host.v5.gnd
+
+    place control-rail rail
+    place control-input dc designator="24V"
+    circuit dc.VDC rail.vctl.rail
+    circuit dc.GND rail.vctl.gnd
+    set dc.VDC net.voltage min="23V" max="25V"
+    set dc.VDC net.name "VCTL"
+    circuit dc.GND host.gnd
+    place bulk dc-bulk node=dc.VDC rail=rail.vctl value="47µF" \
+        footprint="Capacitor_SMD:CP_Elec_6.3x7.7" note="non-ceramic input reservoir for the buck's transient load"
+    place tvs dc-clamp value=SMBJ26A
+    circuit dc.VDC dc-clamp dc.GND
+
+    place tpsm53603 buck vout="5.1V" enable-above="19V"
+    connect power from=rail.vctl to=buck.in
+    nc buck.PGOOD note="released both when good and when unpowered; link-good reports cabinet availability"
+    place ltc4359-diode block
+    circuit buck.out.rail block.anode
+    circuit block.cathode host.v5.rail
+    circuit block.gnd host.v5.gnd
+    circuit buck.out.gnd host.v5.gnd
+    // The 3 A Pi load is drawn through the diode from the buck.
+    add host.v5.rail net.draw "3A"
+
+    // The HAT's logic rail is fed from the header node so USB-C powered bench
+    // operation also brings up CAN and Qwiic. Header 3.3 V feeds only ID EEPROM.
+    place ap2112k3v3 ldo in=host.v5
+    place bulk logic-bulk node=ldo.out.rail rail=ldo.out value="10µF" \
+        footprint="Capacitor_SMD:CP_Elec_5x5.8" note="Qwiic hot-plug reservoir"
+    place indicator logic-led rail=ldo.out r="680Ω" designator="3V3"
+    set ldo.out.rail net.name "3V3"
+
+    // MCP2518FD on Pi SPI0. The barrier and the two backbone jacks live in
+    // arc-link; CAN and DCC are isolated from the host ground.
+    place mcp2518fd can vdd=ldo.out designator=XCAN
+    place arc-link link host=ldo.out {
+        with jacks
+        with dcc
+    }
+    circuit host.spi-sck can.spi.sck
+    circuit host.spi-mosi can.spi.mosi
+    circuit host.spi-miso can.spi.miso
+    circuit host.spi-cs can.spi.nss
+    circuit host.can-int can.int
+    connect can from=can to=link
+    place test-point can-txd at=link.fdcan.tx package=pad designator=CAN_TX
+    place test-point can-rxd at=link.fdcan.rx package=pad designator=CAN_RX
+
+    // Listen-only DCC: receiver output to BCM24; transmit data held at mark,
+    // receiver enabled and driver held disabled by arc-link's DE pull-down.
+    circuit host.dcc-rxd link.dcc-rxd
+    circuit link.dcc-txd ldo.out.rail
+    place test-point dcc-rxd at=host.dcc-rxd package=pad designator=DCC_RX
+    circuit host.link-good link.link-good
+
+    // Pi I²C1 is exposed directly. Its on-board pull-ups provide the segment's
+    // bias, so do not add a second pair here.
+    place qwiic qwiic vcc=ldo.out designator=I2C
+    circuit host.sda qwiic.i2c.sda
+    circuit host.scl qwiic.i2c.scl
+
+    // Master contactor: BCM17 switches the low side of the 24 V coil. A 10 kΩ
+    // gate pull-down keeps it open while the Pi boots. The freewheel diode is
+    // cathode to VCTL and anode to A2; coil A1 is on VCTL in the cabinet.
+    place contactor-port contactor designator=CONTACTOR
+    place buk9m53 fet designator=CTRL
+    circuit fet.S dc.GND
+    circuit fet.D contactor.A2
+    place resistor Rgate value="100Ω" intent=series
+    circuit host.contactor-en Rgate fet.G
+    place pull-down Rgate-pd node=fet.G rail=rail.vctl value="10kΩ"
+    place diode flyback value=SS16 footprint="Diode_SMD:D_SMA"
+    circuit fet.D flyback.A
+    circuit flyback.K dc.VDC
+
+    // The auxiliary contact is wetted from the 24 V bus in the cabinet. Its
+    // return drives an optocoupler through 4.3 kΩ in a 1206 (about 130 mW at
+    // the control rail ceiling). The Pi reads low when the contact closes.
+    place fodm217a aux-opto designator=CTRL_GOOD
+    place resistor Raux value="4.3kΩ" intent=series footprint="Resistor_SMD:R_1206_3216Metric"
+    circuit contactor.AUX Raux aux-opto.A
+    circuit aux-opto.K dc.GND
+    circuit aux-opto.C host.contactor-aux
+    circuit aux-opto.E ldo.out.gnd
+    place pull-up Raux-pu node=host.contactor-aux rail=ldo.out value="100kΩ"
+
+    place fiducial "fid/0"
+    place fiducial "fid/1"
+    place fiducial "fid/2"
+}

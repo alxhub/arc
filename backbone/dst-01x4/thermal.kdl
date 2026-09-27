@@ -1,0 +1,37 @@
+// The thermometer and a low-side switch for a fan on VPWR, before the shunt.
+
+use "@stackup/passives"
+use "@stackup/sensor/temp/tmp1075"
+use "@stackup/discrete/fet/dmn3404l"
+use "@stackup/discrete/diode/diode"
+use "@stackup/connector/header"
+
+block district-thermal {
+    port logic type=power
+    port vpwr type=power
+    port i2c type=i2c
+    port enable
+
+    // Rev 2 layout requirement: two filled-and-capped vias under the exposed
+    // pad, 1 mm apart, using the board's 0.6 / 0.3 mm process. KDL cannot
+    // place or specify them yet.
+    place tmp1075 sensor vdd=logic i2c=i2c offset=0 designator=TEMP
+    nc sensor.ALERT note="thermometer is polled; firmware sets the limit"
+
+    place conn-1x2 fan designator=FAN \
+        note="track rail and switched return for the cooling fan"
+    circuit fan.1 vpwr.rail
+    place dmn3404l fet
+    circuit fet.source vpwr.gnd
+    circuit fet.drain fan.2 name="fan/-"
+
+    place resistor Rgate value="100Ω" intent=series
+    circuit enable Rgate fet.gate
+    place pull-down Rpd node=fet.gate rail=logic value="10kΩ" \
+        note="undriven enable keeps the fan off"
+
+    place diode flyback value=SS14 footprint="Diode_SMD:D_SMA" \
+        note="fan freewheel: anode at switched return, cathode at VPWR"
+    circuit fet.drain flyback.a
+    circuit flyback.b vpwr.rail
+}

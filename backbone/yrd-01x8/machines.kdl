@@ -1,0 +1,246 @@
+// Eight machine bridges with a common trip reference, sleep and fault line.
+use "@stackup/passives"
+use "@stackup/driver/motor/drv8874"
+use "@stackup/mechanical"
+
+block machine-bank-drivers {
+    port vpwr type=power
+    port logic type=power
+    port vref-pwm type=pwm
+    port vref
+    port sleep
+    port fault
+
+    // 220 µF input pulse reservoir plus one local 47 µF polymer per four bridges.
+    place bulk rail-res node=vpwr.rail rail=vpwr value="220µF" footprint="stackup:CP_Elec_10x16.5"
+    place bypass rail-hf node=vpwr.rail rail=vpwr value="100nF"
+    place bulk bank0-res node=vpwr.rail rail=vpwr value="47µF" footprint="Capacitor_SMD:CP_Elec_6.3x9.9"
+    place bulk bank1-res node=vpwr.rail rail=vpwr value="47µF" footprint="Capacitor_SMD:CP_Elec_6.3x9.9"
+
+    // 10 kΩ / 1 µF makes the 20 kHz PWM reference a 10 ms DC trip setting.
+    // The 1 MΩ pull-down holds the undriven limit near zero.
+    place resistor Rvref value="10kΩ" intent=series
+    circuit vref-pwm Rvref vref name="VREF_PWM"
+    place bypass Cvref node=vref rail=logic value="1µF"
+    place pull-down Rvref-pd node=vref rail=logic value="1MΩ"
+    place test-point tp-vref at=vref package=pad designator=VREF
+    place pull-up Rfault node=fault rail=logic value="10kΩ"
+    place pull-down Rsleep node=sleep rail=logic value="100kΩ" \
+        note="an undriven bank remains asleep"
+    port ch0-ph
+    port ch0-en type=pwm
+    port ch0-sense type=analog
+    port ch0-a
+    port ch0-b
+    // Pulse duty keeps the bridge cooler, but the PCB still needs thermal vias.
+    place drv8874 ch0 drive=vpwr logic=logic { without support }
+    // The common fault has one pull-up; local support omits each part's own.
+    place bypass Cvm0 node=ch0.VM rail=vpwr value="100nF"
+    circuit ch0.GND ch0.PGND ch0.PAD vpwr.gnd
+    circuit ch0.PMODE vpwr.gnd
+    place capacitor Cflying0 value="22nF" intent=filter
+    circuit ch0.CPH Cflying0 ch0.CPL
+    place capacitor Cvcp0 value="100nF" intent=filter
+    circuit ch0.VM Cvcp0 ch0.VCP
+    circuit ch0.VREF vref
+    circuit ch0.sleep sleep
+    circuit ch0.fault fault
+    circuit ch0.phase ch0-ph name="PH0"
+    circuit ch0.enable ch0-en name="EN0"
+    circuit ch0.out-a ch0-a name="A0"
+    circuit ch0.out-b ch0-b name="B0"
+    circuit ch0.sense ch0-sense name="ISENSE0"
+    // 1.21 kΩ gives 0.545 V/A. 10 nF preserves the throw current trace.
+    place resistor Rsense0 value="1.21kΩ" intent=series
+    circuit ch0-sense Rsense0 logic.gnd
+    place bypass Csense0 node=ch0-sense rail=logic value="10nF"
+    port ch1-ph
+    port ch1-en type=pwm
+    port ch1-sense type=analog
+    port ch1-a
+    port ch1-b
+    // Pulse duty keeps the bridge cooler, but the PCB still needs thermal vias.
+    place drv8874 ch1 drive=vpwr logic=logic { without support }
+    // The common fault has one pull-up; local support omits each part's own.
+    place bypass Cvm1 node=ch1.VM rail=vpwr value="100nF"
+    circuit ch1.GND ch1.PGND ch1.PAD vpwr.gnd
+    circuit ch1.PMODE vpwr.gnd
+    place capacitor Cflying1 value="22nF" intent=filter
+    circuit ch1.CPH Cflying1 ch1.CPL
+    place capacitor Cvcp1 value="100nF" intent=filter
+    circuit ch1.VM Cvcp1 ch1.VCP
+    circuit ch1.VREF vref
+    circuit ch1.sleep sleep
+    circuit ch1.fault fault
+    circuit ch1.phase ch1-ph name="PH1"
+    circuit ch1.enable ch1-en name="EN1"
+    circuit ch1.out-a ch1-a name="A1"
+    circuit ch1.out-b ch1-b name="B1"
+    circuit ch1.sense ch1-sense name="ISENSE1"
+    // 1.21 kΩ gives 0.545 V/A. 10 nF preserves the throw current trace.
+    place resistor Rsense1 value="1.21kΩ" intent=series
+    circuit ch1-sense Rsense1 logic.gnd
+    place bypass Csense1 node=ch1-sense rail=logic value="10nF"
+    port ch2-ph
+    port ch2-en type=pwm
+    port ch2-sense type=analog
+    port ch2-a
+    port ch2-b
+    // Pulse duty keeps the bridge cooler, but the PCB still needs thermal vias.
+    place drv8874 ch2 drive=vpwr logic=logic { without support }
+    // The common fault has one pull-up; local support omits each part's own.
+    place bypass Cvm2 node=ch2.VM rail=vpwr value="100nF"
+    circuit ch2.GND ch2.PGND ch2.PAD vpwr.gnd
+    circuit ch2.PMODE vpwr.gnd
+    place capacitor Cflying2 value="22nF" intent=filter
+    circuit ch2.CPH Cflying2 ch2.CPL
+    place capacitor Cvcp2 value="100nF" intent=filter
+    circuit ch2.VM Cvcp2 ch2.VCP
+    circuit ch2.VREF vref
+    circuit ch2.sleep sleep
+    circuit ch2.fault fault
+    circuit ch2.phase ch2-ph name="PH2"
+    circuit ch2.enable ch2-en name="EN2"
+    circuit ch2.out-a ch2-a name="A2"
+    circuit ch2.out-b ch2-b name="B2"
+    circuit ch2.sense ch2-sense name="ISENSE2"
+    // 1.21 kΩ gives 0.545 V/A. 10 nF preserves the throw current trace.
+    place resistor Rsense2 value="1.21kΩ" intent=series
+    circuit ch2-sense Rsense2 logic.gnd
+    place bypass Csense2 node=ch2-sense rail=logic value="10nF"
+    port ch3-ph
+    port ch3-en type=pwm
+    port ch3-sense type=analog
+    port ch3-a
+    port ch3-b
+    // Pulse duty keeps the bridge cooler, but the PCB still needs thermal vias.
+    place drv8874 ch3 drive=vpwr logic=logic { without support }
+    // The common fault has one pull-up; local support omits each part's own.
+    place bypass Cvm3 node=ch3.VM rail=vpwr value="100nF"
+    circuit ch3.GND ch3.PGND ch3.PAD vpwr.gnd
+    circuit ch3.PMODE vpwr.gnd
+    place capacitor Cflying3 value="22nF" intent=filter
+    circuit ch3.CPH Cflying3 ch3.CPL
+    place capacitor Cvcp3 value="100nF" intent=filter
+    circuit ch3.VM Cvcp3 ch3.VCP
+    circuit ch3.VREF vref
+    circuit ch3.sleep sleep
+    circuit ch3.fault fault
+    circuit ch3.phase ch3-ph name="PH3"
+    circuit ch3.enable ch3-en name="EN3"
+    circuit ch3.out-a ch3-a name="A3"
+    circuit ch3.out-b ch3-b name="B3"
+    circuit ch3.sense ch3-sense name="ISENSE3"
+    // 1.21 kΩ gives 0.545 V/A. 10 nF preserves the throw current trace.
+    place resistor Rsense3 value="1.21kΩ" intent=series
+    circuit ch3-sense Rsense3 logic.gnd
+    place bypass Csense3 node=ch3-sense rail=logic value="10nF"
+    port ch4-ph
+    port ch4-en type=pwm
+    port ch4-sense type=analog
+    port ch4-a
+    port ch4-b
+    // Pulse duty keeps the bridge cooler, but the PCB still needs thermal vias.
+    place drv8874 ch4 drive=vpwr logic=logic { without support }
+    // The common fault has one pull-up; local support omits each part's own.
+    place bypass Cvm4 node=ch4.VM rail=vpwr value="100nF"
+    circuit ch4.GND ch4.PGND ch4.PAD vpwr.gnd
+    circuit ch4.PMODE vpwr.gnd
+    place capacitor Cflying4 value="22nF" intent=filter
+    circuit ch4.CPH Cflying4 ch4.CPL
+    place capacitor Cvcp4 value="100nF" intent=filter
+    circuit ch4.VM Cvcp4 ch4.VCP
+    circuit ch4.VREF vref
+    circuit ch4.sleep sleep
+    circuit ch4.fault fault
+    circuit ch4.phase ch4-ph name="PH4"
+    circuit ch4.enable ch4-en name="EN4"
+    circuit ch4.out-a ch4-a name="A4"
+    circuit ch4.out-b ch4-b name="B4"
+    circuit ch4.sense ch4-sense name="ISENSE4"
+    // 1.21 kΩ gives 0.545 V/A. 10 nF preserves the throw current trace.
+    place resistor Rsense4 value="1.21kΩ" intent=series
+    circuit ch4-sense Rsense4 logic.gnd
+    place bypass Csense4 node=ch4-sense rail=logic value="10nF"
+    port ch5-ph
+    port ch5-en type=pwm
+    port ch5-sense type=analog
+    port ch5-a
+    port ch5-b
+    // Pulse duty keeps the bridge cooler, but the PCB still needs thermal vias.
+    place drv8874 ch5 drive=vpwr logic=logic { without support }
+    // The common fault has one pull-up; local support omits each part's own.
+    place bypass Cvm5 node=ch5.VM rail=vpwr value="100nF"
+    circuit ch5.GND ch5.PGND ch5.PAD vpwr.gnd
+    circuit ch5.PMODE vpwr.gnd
+    place capacitor Cflying5 value="22nF" intent=filter
+    circuit ch5.CPH Cflying5 ch5.CPL
+    place capacitor Cvcp5 value="100nF" intent=filter
+    circuit ch5.VM Cvcp5 ch5.VCP
+    circuit ch5.VREF vref
+    circuit ch5.sleep sleep
+    circuit ch5.fault fault
+    circuit ch5.phase ch5-ph name="PH5"
+    circuit ch5.enable ch5-en name="EN5"
+    circuit ch5.out-a ch5-a name="A5"
+    circuit ch5.out-b ch5-b name="B5"
+    circuit ch5.sense ch5-sense name="ISENSE5"
+    // 1.21 kΩ gives 0.545 V/A. 10 nF preserves the throw current trace.
+    place resistor Rsense5 value="1.21kΩ" intent=series
+    circuit ch5-sense Rsense5 logic.gnd
+    place bypass Csense5 node=ch5-sense rail=logic value="10nF"
+    port ch6-ph
+    port ch6-en type=pwm
+    port ch6-sense type=analog
+    port ch6-a
+    port ch6-b
+    // Pulse duty keeps the bridge cooler, but the PCB still needs thermal vias.
+    place drv8874 ch6 drive=vpwr logic=logic { without support }
+    // The common fault has one pull-up; local support omits each part's own.
+    place bypass Cvm6 node=ch6.VM rail=vpwr value="100nF"
+    circuit ch6.GND ch6.PGND ch6.PAD vpwr.gnd
+    circuit ch6.PMODE vpwr.gnd
+    place capacitor Cflying6 value="22nF" intent=filter
+    circuit ch6.CPH Cflying6 ch6.CPL
+    place capacitor Cvcp6 value="100nF" intent=filter
+    circuit ch6.VM Cvcp6 ch6.VCP
+    circuit ch6.VREF vref
+    circuit ch6.sleep sleep
+    circuit ch6.fault fault
+    circuit ch6.phase ch6-ph name="PH6"
+    circuit ch6.enable ch6-en name="EN6"
+    circuit ch6.out-a ch6-a name="A6"
+    circuit ch6.out-b ch6-b name="B6"
+    circuit ch6.sense ch6-sense name="ISENSE6"
+    // 1.21 kΩ gives 0.545 V/A. 10 nF preserves the throw current trace.
+    place resistor Rsense6 value="1.21kΩ" intent=series
+    circuit ch6-sense Rsense6 logic.gnd
+    place bypass Csense6 node=ch6-sense rail=logic value="10nF"
+    port ch7-ph
+    port ch7-en type=pwm
+    port ch7-sense type=analog
+    port ch7-a
+    port ch7-b
+    // Pulse duty keeps the bridge cooler, but the PCB still needs thermal vias.
+    place drv8874 ch7 drive=vpwr logic=logic { without support }
+    // The common fault has one pull-up; local support omits each part's own.
+    place bypass Cvm7 node=ch7.VM rail=vpwr value="100nF"
+    circuit ch7.GND ch7.PGND ch7.PAD vpwr.gnd
+    circuit ch7.PMODE vpwr.gnd
+    place capacitor Cflying7 value="22nF" intent=filter
+    circuit ch7.CPH Cflying7 ch7.CPL
+    place capacitor Cvcp7 value="100nF" intent=filter
+    circuit ch7.VM Cvcp7 ch7.VCP
+    circuit ch7.VREF vref
+    circuit ch7.sleep sleep
+    circuit ch7.fault fault
+    circuit ch7.phase ch7-ph name="PH7"
+    circuit ch7.enable ch7-en name="EN7"
+    circuit ch7.out-a ch7-a name="A7"
+    circuit ch7.out-b ch7-b name="B7"
+    circuit ch7.sense ch7-sense name="ISENSE7"
+    // 1.21 kΩ gives 0.545 V/A. 10 nF preserves the throw current trace.
+    place resistor Rsense7 value="1.21kΩ" intent=series
+    circuit ch7-sense Rsense7 logic.gnd
+    place bypass Csense7 node=ch7-sense rail=logic value="10nF"
+}

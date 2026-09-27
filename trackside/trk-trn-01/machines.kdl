@@ -1,0 +1,124 @@
+use "@stackup/passives"
+use "@stackup/driver/motor/drv8874"
+
+// Four DRV8874 bridges share sleep, open-drain fault, and PWM trip reference.
+// Each IPROPI has its own 1.21 kΩ termination and 10 nF filter.
+block turnout-machines {
+    port bank type=power
+    port logic type=power
+    port sleep
+    port fault
+    port trip-pwm
+    port vref
+    port ph0
+    port en0
+    port sense0 type=analog
+    port a0
+    port b0
+    port ph1
+    port en1
+    port sense1 type=analog
+    port a1
+    port b1
+    port ph2
+    port en2
+    port sense2 type=analog
+    port a2
+    port b2
+    port ph3
+    port en3
+    port sense3 type=analog
+    port a3
+    port b3
+
+    // 10 ms RC smooths a TIM1 PWM carrier into the shared current limit.
+    place resistor Rvref value="10kΩ" intent=series
+    circuit trip-pwm Rvref vref
+    place filter Cvref node=vref rail=logic value="1µF"
+    place pull-down Rvref-pd node=vref rail=logic value="1MΩ"
+    place pull-up Rfault node=fault rail=logic value="10kΩ"
+
+    // Shared-fault variant: keep the bridge's charge-pump support, and use
+    // one 10 kΩ pull-up on the wire-OR rather than four in parallel.
+    place drv8874 bridge0 drive=bank logic=logic { without support }
+    place bypass Cvm0 node=bridge0.VM rail=bank value="100nF"
+    circuit bridge0.GND bridge0.PGND bridge0.PAD bank.gnd
+    circuit bridge0.PMODE bank.gnd
+    place capacitor Cflying0 value="22nF" intent=filter
+    circuit bridge0.CPH Cflying0 bridge0.CPL
+    place capacitor Cvcp0 value="100nF" intent=filter
+    circuit bridge0.VM Cvcp0 bridge0.VCP
+    circuit bridge0.phase ph0
+    circuit bridge0.enable en0
+    circuit bridge0.sleep sleep
+    circuit bridge0.fault fault
+    circuit bridge0.VREF vref
+    circuit bridge0.out-a a0
+    circuit bridge0.out-b b0
+    place resistor Rsense0 value="1.21kΩ" intent=series
+    circuit bridge0.sense sense0 Rsense0 logic.gnd
+    place filter Csense0 node=sense0 rail=logic value="10nF"
+
+    // Shared-fault variant: keep the bridge's charge-pump support, and use
+    // one 10 kΩ pull-up on the wire-OR rather than four in parallel.
+    place drv8874 bridge1 drive=bank logic=logic { without support }
+    place bypass Cvm1 node=bridge1.VM rail=bank value="100nF"
+    circuit bridge1.GND bridge1.PGND bridge1.PAD bank.gnd
+    circuit bridge1.PMODE bank.gnd
+    place capacitor Cflying1 value="22nF" intent=filter
+    circuit bridge1.CPH Cflying1 bridge1.CPL
+    place capacitor Cvcp1 value="100nF" intent=filter
+    circuit bridge1.VM Cvcp1 bridge1.VCP
+    circuit bridge1.phase ph1
+    circuit bridge1.enable en1
+    circuit bridge1.sleep sleep
+    circuit bridge1.fault fault
+    circuit bridge1.VREF vref
+    circuit bridge1.out-a a1
+    circuit bridge1.out-b b1
+    place resistor Rsense1 value="1.21kΩ" intent=series
+    circuit bridge1.sense sense1 Rsense1 logic.gnd
+    place filter Csense1 node=sense1 rail=logic value="10nF"
+
+    // Shared-fault variant: keep the bridge's charge-pump support, and use
+    // one 10 kΩ pull-up on the wire-OR rather than four in parallel.
+    place drv8874 bridge2 drive=bank logic=logic { without support }
+    place bypass Cvm2 node=bridge2.VM rail=bank value="100nF"
+    circuit bridge2.GND bridge2.PGND bridge2.PAD bank.gnd
+    circuit bridge2.PMODE bank.gnd
+    place capacitor Cflying2 value="22nF" intent=filter
+    circuit bridge2.CPH Cflying2 bridge2.CPL
+    place capacitor Cvcp2 value="100nF" intent=filter
+    circuit bridge2.VM Cvcp2 bridge2.VCP
+    circuit bridge2.phase ph2
+    circuit bridge2.enable en2
+    circuit bridge2.sleep sleep
+    circuit bridge2.fault fault
+    circuit bridge2.VREF vref
+    circuit bridge2.out-a a2
+    circuit bridge2.out-b b2
+    place resistor Rsense2 value="1.21kΩ" intent=series
+    circuit bridge2.sense sense2 Rsense2 logic.gnd
+    place filter Csense2 node=sense2 rail=logic value="10nF"
+
+    // Shared-fault variant: keep the bridge's charge-pump support, and use
+    // one 10 kΩ pull-up on the wire-OR rather than four in parallel.
+    place drv8874 bridge3 drive=bank logic=logic { without support }
+    place bypass Cvm3 node=bridge3.VM rail=bank value="100nF"
+    circuit bridge3.GND bridge3.PGND bridge3.PAD bank.gnd
+    circuit bridge3.PMODE bank.gnd
+    place capacitor Cflying3 value="22nF" intent=filter
+    circuit bridge3.CPH Cflying3 bridge3.CPL
+    place capacitor Cvcp3 value="100nF" intent=filter
+    circuit bridge3.VM Cvcp3 bridge3.VCP
+    circuit bridge3.phase ph3
+    circuit bridge3.enable en3
+    circuit bridge3.sleep sleep
+    circuit bridge3.fault fault
+    circuit bridge3.VREF vref
+    circuit bridge3.out-a a3
+    circuit bridge3.out-b b3
+    place resistor Rsense3 value="1.21kΩ" intent=series
+    circuit bridge3.sense sense3 Rsense3 logic.gnd
+    place filter Csense3 node=sense3 rail=logic value="10nF"
+}

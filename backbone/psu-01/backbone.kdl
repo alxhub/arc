@@ -1,0 +1,96 @@
+// block/psu-01/backbone — the un-isolated bus interface: the port on two RJ45 jacks, a CAN FD
+// transceiver the MCU can silence, and the RS-485 transceiver that puts the DCC sync on the pair.
+// Ported from arc's `block::psu_01::backbone`.
+//
+// Every other node crosses the backbone through `arc_link`'s barrier — two isolators and a
+// floating converter. This board cannot, and the reason is structural: psu-01 *sources* VLINK, so
+// its ground and the backbone's ground are one node by construction, and an isolator here would
+// have its two sides shorted by the power path beside it. This is the one board where the honest
+// design is bare transceivers referencing the rail's own return.
+//
+// What the port is testing:
+//
+// - **A block re-exports a part's typed port line by line.** The MCU's CAN link lands on this
+//   block's `fdcan`, which is the transceiver's `can` seen through two `circuit`s, so the board
+//   answers the contract on the block rather than reaching into it.
+// - **A requirement on a capability.** The DCC waveform must come off a DMA-fed counter — the
+//   edges *are* the protocol — so `dcc-txd` is a `pwm` port that `require`s `signal.dma`, and a
+//   pin that cannot reach such a channel is a finding rather than a firmware surprise.
+// - **Two bodies are one port.** The jacks are tied conductor for conductor here, so a sheet
+//   cannot wire one and not the other; the conductors are named once, at the port.
+
+use "@stackup/passives"
+use "@stackup/bus/can/tcan334g"
+use "@stackup/bus/rs485/st3485eb"
+use "../../shared/connectors.kdl"
+
+block backbone {
+    // The 3.3 V both transceivers run off — one domain for logic and bus sides alike, because this
+    // is the un-isolated node.
+    port logic type=power
+    // The backbone rail, as a *demand*: this node makes it, on the rail sheet, and this sheet's job
+    // is only to put it on the port.
+    port link type=power
+
+    // The MCU's end of the CAN logic link.
+    port fdcan type=can
+    // The transceiver's mode pins, vended rather than strapped: firmware holds the part quiet
+    // until the rail is up, so the bus never sees a node half awake. Their internal pulldowns mean
+    // an undriven part is simply on.
+    port stb type=output
+    port shdn type=output
+
+    // The DCC driver's three lines. The waveform in, for a DMA-fed timer channel — this node is
+    // the sync generator, and the edges are the protocol; the enable, active high and pulled down
+    // here; and the pair read back, always on, so firmware can compare what it sent with what the
+    // bus carries.
+    port dcc-txd type=pwm {
+        require signal.dma
+    }
+    port dcc-de type=output
+    port dcc-rxd
+
+    // The CAN FD transceiver — bare, where every other node is isolated. Its mode pins are real
+    // ports; nothing is strapped.
+    place tcan334g can vcc=logic designator=CAN
+    circuit fdcan.tx can.can.tx
+    circuit fdcan.rx can.can.rx
+    circuit stb can.stb
+    circuit shdn can.shdn
+
+    // The DCC driver. What is wired here is what the node *is*: ~RE low keeps the receiver on
+    // regardless, so the MCU reads back the pair it is driving and a contended or dead bus is a
+    // comparison rather than a guess; and DE carries a pulldown, so an MCU that has let go of the
+    // line — unprogrammed, in reset, mid-boot — leaves the pair idle, exactly as the rail sheet's
+    // switch leaves the rail dark. The ST3485EB rather than the MAX3485 it is pin-for-pin with,
+    // for the pair it drives: A/B meet a hot-plugged patch lead in a cabinet, and this part's bus
+    // pins stand ±15 kV IEC air discharge where the plain MAX3485's stand 2 kV HBM.
+    place st3485eb dcc vcc=logic designator=DCC
+    circuit dcc.re logic.gnd
+    place pull-down de-pulldown node=dcc.de rail=logic value="10kΩ" \
+        note="DE pulldown — the pair idles when the MCU lets go"
+    circuit dcc-txd dcc.di
+    circuit dcc-de dcc.de
+    circuit dcc-rxd dcc.ro
+
+    // The port: two 8P8C jacks in parallel, which is one port on two bodies — a lead arrives on
+    // either and a second lead carries the same six conductors on to the next node, so a run of
+    // nodes can be a chain instead of six drops back to a hub. Still not a hub, and it terminates
+    // nothing: no 120 Ω on either pair, because the wiring centre terminates the buses, a node
+    // that carried its own would double-load the star once per node plugged in, and a pass-through
+    // can now sit mid-trunk, where a terminator is the classic CAN installation fault. LNK1/LNK2
+    // on the silk: a cable goes in either, so the legend is the bus's name rather than a
+    // connector number.
+    scope port {
+        place backbone-jack a reference=LNK \
+            note="backbone jack — the rail on pairs 1/2 and 3/6, CAN on 4/5, DCC on 7/8; in parallel with the other, so a run passes through"
+        place backbone-jack b reference=LNK \
+            note="the same port on a second body — a lead carries the run on to the next node"
+        circuit a.VLINK b.VLINK link.rail
+        circuit a.GND b.GND link.gnd
+        circuit a.CANH b.CANH can.CANH name="CANH"
+        circuit a.CANL b.CANL can.CANL name="CANL"
+        circuit a.DCC_A b.DCC_A dcc.A name="DCC_A"
+        circuit a.DCC_B b.DCC_B dcc.B name="DCC_B"
+    }
+}

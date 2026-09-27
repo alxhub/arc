@@ -1,0 +1,35 @@
+(version 1)
+
+# Custom design rules for trk-hub-01. KiCad reads `<board>.kicad_dru` from the board's own directory;
+# Board Setup → Design Rules → Custom Rules is an editor for this file, so opening that dialog and
+# pressing OK will write back whatever it has buffered.
+#
+# A custom rule beats the board-setup constraint for the thing it names. Where two rules match the
+# same pair of objects, the *last* one in the file wins.
+
+# The board holds 0.2 mm hole-to-copper, which is the ordinary drill-to-copper figure and sits above
+# PCBWay's 0.15 mm process floor. The USB receptacle cannot have it: the GCT USB4105's own land
+# pattern puts the ground pads 0.1944 mm from the shell's mounting-post holes, and both the pads and
+# the holes are defined inside the footprint. Nothing about the layout produced that gap and no edit
+# here can close it — it is the connector, and it is a part fabs build every day.
+#
+# So the relaxation is scoped to the footprint rather than written into the board constraint, for
+# the same reason hat-01 scopes its escape clearance to a region: what forces it is one part's
+# geometry, and every other hole on the board should still answer to 0.2 mm.
+#
+# 0.15 mm is PCBWay's tight-process drill-to-copper figure, not the 0.1944 mm this footprint
+# happens to need — a bound reverse-engineered from a violation stops meaning anything the moment
+# the violation moves. Nothing here can therefore ask for less than the fab can build.
+#
+# Both A and B are tested, so this only relaxes two things that are *both* inside the receptacle. A via or a
+# track that merely runs past the receptacle is still held to 0.2 mm.
+#
+# `memberOfFootprint` matches on the reference designator, and this one is `USB` because the
+# design says so — the receptacle is placed `designated("USB")`, so the name is a constant of the
+# source rather than a number the registry hands out in placement order. If the design ever stops
+# saying it, the receptacle becomes a `J` number and its four violations come straight back, which
+# is the signal to retarget this rule.
+
+(rule "usb receptacle mounting posts"
+	(constraint hole_clearance (min 0.15mm))
+	(condition "A.memberOfFootprint('USB') && B.memberOfFootprint('USB')"))

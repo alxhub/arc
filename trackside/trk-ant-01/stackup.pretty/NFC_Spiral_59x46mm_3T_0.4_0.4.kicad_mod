@@ -1,0 +1,211 @@
+(footprint "NFC_Spiral_59x46mm_3T_0.4_0.4"
+	(version 20260206)
+	(generator "stackup")
+	(descr "NFC reader coil: rectangular planar spiral, 59 x 46 mm outside, 3 turns of 0.4 mm track on a 0.4 mm gap, about 1.64 uH. Front copper from pad 1 inward; the inner end returns on the back copper to pad 2 beside it. Both terminals are plated through.")
+	(tags "antenna nfc coil spiral 13.56MHz")
+	(layer "F.Cu")
+	(property "Reference" "REF**"
+		(at 0 -24.8 0)
+		(unlocked yes)
+		(layer "F.Fab")
+		(hide yes)
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Value" "NFC_Spiral_59x46mm_3T_0.4_0.4"
+		(at 0 24.8 0)
+		(unlocked yes)
+		(layer "F.Fab")
+		(hide yes)
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(attr smd)
+	(net_tie_pad_groups "1, 2")
+	(duplicate_pad_numbers_are_jumpers no)
+	(fp_line
+		(start -30.8 22.8)
+		(end -29.3 22.8)
+		(stroke
+			(width 0.4)
+			(type solid)
+		)
+		(layer "F.Cu")
+	)
+	(fp_line
+		(start -29.3 22.8)
+		(end -29.3 -22.8)
+		(stroke
+			(width 0.4)
+			(type solid)
+		)
+		(layer "F.Cu")
+	)
+	(fp_line
+		(start -29.3 -22.8)
+		(end 29.3 -22.8)
+		(stroke
+			(width 0.4)
+			(type solid)
+		)
+		(layer "F.Cu")
+	)
+	(fp_line
+		(start 29.3 -22.8)
+		(end 29.3 22)
+		(stroke
+			(width 0.4)
+			(type solid)
+		)
+		(layer "F.Cu")
+	)
+	(fp_line
+		(start 29.3 22)
+		(end -28.5 22)
+		(stroke
+			(width 0.4)
+			(type solid)
+		)
+		(layer "F.Cu")
+	)
+	(fp_line
+		(start -28.5 22)
+		(end -28.5 -22)
+		(stroke
+			(width 0.4)
+			(type solid)
+		)
+		(layer "F.Cu")
+	)
+	(fp_line
+		(start -28.5 -22)
+		(end 28.5 -22)
+		(stroke
+			(width 0.4)
+			(type solid)
+		)
+		(layer "F.Cu")
+	)
+	(fp_line
+		(start 28.5 -22)
+		(end 28.5 21.2)
+		(stroke
+			(width 0.4)
+			(type solid)
+		)
+		(layer "F.Cu")
+	)
+	(fp_line
+		(start 28.5 21.2)
+		(end -27.7 21.2)
+		(stroke
+			(width 0.4)
+			(type solid)
+		)
+		(layer "F.Cu")
+	)
+	(fp_line
+		(start -27.7 21.2)
+		(end -27.7 -21.2)
+		(stroke
+			(width 0.4)
+			(type solid)
+		)
+		(layer "F.Cu")
+	)
+	(fp_line
+		(start -27.7 -21.2)
+		(end 27.7 -21.2)
+		(stroke
+			(width 0.4)
+			(type solid)
+		)
+		(layer "F.Cu")
+	)
+	(fp_line
+		(start 27.7 -21.2)
+		(end 27.7 20.4)
+		(stroke
+			(width 0.4)
+			(type solid)
+		)
+		(layer "F.Cu")
+	)
+	(fp_line
+		(start 27.7 20.4)
+		(end -26.9 20.4)
+		(stroke
+			(width 0.4)
+			(type solid)
+		)
+		(layer "F.Cu")
+	)
+	(fp_line
+		(start -26.9 20.4)
+		(end -25.7 19.2)
+		(stroke
+			(width 0.4)
+			(type solid)
+		)
+		(layer "F.Cu")
+	)
+	(fp_line
+		(start -25.7 19.2)
+		(end -30.8 20.8)
+		(stroke
+			(width 0.4)
+			(type solid)
+		)
+		(layer "B.Cu")
+	)
+	(fp_rect
+		(start -29.5 -23)
+		(end 29.5 23)
+		(stroke
+			(width 0.05)
+			(type solid)
+		)
+		(fill no)
+		(layer "F.Fab")
+	)
+	(fp_rect
+		(start -31.55 -23.25)
+		(end 29.75 23.25)
+		(stroke
+			(width 0.05)
+			(type solid)
+		)
+		(fill no)
+		(layer "F.CrtYd")
+	)
+	(pad "1" thru_hole circle
+		(at -30.8 22.8)
+		(size 1 1)
+		(drill 0.5)
+		(layers "*.Cu" "*.Mask")
+		(remove_unused_layers no)
+	)
+	(pad "2" thru_hole circle
+		(at -30.8 20.8)
+		(size 1 1)
+		(drill 0.5)
+		(layers "*.Cu" "*.Mask")
+		(remove_unused_layers no)
+	)
+	(pad "2" thru_hole circle
+		(at -25.7 19.2)
+		(size 0.8 0.8)
+		(drill 0.4)
+		(layers "*.Cu" "*.Mask")
+		(remove_unused_layers no)
+	)
+	(embedded_fonts no)
+)

@@ -1,0 +1,28 @@
+// TLC59116 sinks sixteen 5 mA lamps from a 5 V common on a 2x16 header.
+use "@stackup/driver/led/tlc59116"
+use "./connectors.kdl"
+
+block signal-bank {
+    port logic type=power
+    port lamps type=power { add net.draw "80mA" }
+    port i2c type=i2c
+    place tlc59116 driver vdd=logic i2c=i2c current="5mA" address=0
+    place signal-header header designator=LEDS
+    circuit header.V lamps.rail
+    circuit driver.OUT7 header.OUT0 name="out0"
+    circuit driver.OUT6 header.OUT1 name="out1"
+    circuit driver.OUT5 header.OUT2 name="out2"
+    circuit driver.OUT4 header.OUT3 name="out3"
+    circuit driver.OUT3 header.OUT4 name="out4"
+    circuit driver.OUT2 header.OUT5 name="out5"
+    circuit driver.OUT1 header.OUT6 name="out6"
+    circuit driver.OUT0 header.OUT7 name="out7"
+    circuit driver.OUT15 header.OUT8 name="out8"
+    circuit driver.OUT14 header.OUT9 name="out9"
+    circuit driver.OUT13 header.OUT10 name="out10"
+    circuit driver.OUT12 header.OUT11 name="out11"
+    circuit driver.OUT11 header.OUT12 name="out12"
+    circuit driver.OUT10 header.OUT13 name="out13"
+    circuit driver.OUT9 header.OUT14 name="out14"
+    circuit driver.OUT8 header.OUT15 name="out15"
+}

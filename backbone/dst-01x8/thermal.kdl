@@ -1,0 +1,11 @@
+// One polled thermometer on each four bridge row.
+use "@stackup/sensor/temp/tmp1075"
+
+block district-thermal {
+    port logic type=power
+    port i2c type=i2c
+    // Layout: two filled and capped vias under each exposed sensor pad, 1 mm apart.
+    place tmp1075 sensor0 vdd=logic i2c=i2c offset=0 designator=TEMP0
+    place tmp1075 sensor1 vdd=logic i2c=i2c offset=1 designator=TEMP1
+    nc sensor0.ALERT sensor1.ALERT note="thermometers are polled"
+}

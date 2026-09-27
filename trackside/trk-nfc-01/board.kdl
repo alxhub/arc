@@ -1,0 +1,76 @@
+// ARC-TRK-NFC-01: PN532 reader node with a matched external antenna.
+use "@stackup/passives"
+use "@stackup/types"
+use "@stackup/mechanical"
+use "@stackup/connector/swd"
+use "@stackup/micro/stm32c092"
+use "../../shared/r78e-1a-class-a.kdl"
+use "@stackup/discrete/led/led"
+use "@stackup/rf/nfc/pn532"
+use "../../shared/lin.kdl"
+use "./antenna-port.kdl"
+
+design trk-nfc-01 {
+    stock {
+        packages imperial="0402"
+        derating voltages="16V 25V 50V"
+        tracks "0.2mm 0.25mm 0.3mm 0.4mm 0.8mm 1.0mm 2.0mm"
+    }
+
+    place lin-node node
+    // The PN532 draws up to 200 mA with its field active, above the SBC's
+    // 70 mA budget. Its VBAT gets a local 5 V brick. The cable's V5 passes
+    // through the LIN jacks without joining this output.
+    // The 1 A brick uses the original Class A input filter.
+    place r78e1a-class-a v5 in=node.vpwr
+    place stm32c092 mcu vdd=node.v3v3 package=lqfp32 designator=STM32
+    place pn532-reader reader vbat=v5.out host=node.v3v3
+
+    place indicator reg-led rail=node.v3v3 designator=REG
+    place indicator v5-led rail=v5.out r="1.5kΩ" designator=V5
+
+    // USART1 LIN mode on PB6/PB7. Explicit nets preserve the physical
+    // transmitter/receiver directions at the SBC.
+    circuit mcu.PB6 node.link.rx name="lin/txd"
+    circuit mcu.PB7 node.link.tx name="lin/rxd"
+
+    // SPI1 on PA5/PA7/PA6, select PA4. The reader's host pads are on the
+    // MCU's 3.3 V, never the 5 V field rail. IRQ and reset are active low
+    // with pull-ups inside pn532-reader.
+    connect spi { from mcu sck=PA5 mosi=PA7 miso=PA6; to reader }
+    circuit mcu.PA4 reader.cs name="reader/spi-select"
+    circuit mcu.PA0 reader.irq name="nfc_irq"
+    circuit mcu.PA1 reader.reset name="nfc_rst"
+
+    // NXP's reference matching values target the paired 1.83 µH antenna.
+    // C0/C1/C2 and receiver coupling must be 50 V C0G; L0 is 5%.
+    // Tune the actual assembled flex while measuring with the reader in place.
+    place antenna-port ant designator=ANT
+    circuit reader.ant1 ant.a1 ant.a2 ant.a3 name="reader/A"
+    circuit reader.ant2 ant.b4 ant.b5 ant.b6 name="reader/B"
+    circuit ant.mount node.vpwr.gnd
+
+    place swd-header swd vref=node.v3v3 designator=SWD
+    connect swd { from mcu swdio=PA13 swclk=PA14 nrst=PF2; to swd }
+    circuit node.reset swd.RESET name="nrst"
+
+    scope tp {
+        place test-point lin at=node.lin package=pad designator=LIN
+        place test-point v3v3 at=node.v3v3.rail package=pad designator="3V3"
+        place test-point local5 at=v5.out.rail package=pad designator="5V"
+        place test-point gnd at=node.vpwr.gnd package=loop designator=GND
+    }
+    place mounting-hole "mount/nw"
+    place mounting-hole "mount/ne"
+    place mounting-hole "mount/sw"
+    place mounting-hole "mount/se"
+    place fiducial "fid/0"
+    place fiducial "fid/1"
+    place fiducial "fid/2"
+
+    // No crystal or expansion port: the LIN sync byte keeps the internal
+    // clock aligned, and the PN532 is this node's sole accessory.
+    nc mcu.PA2 mcu.PA3 mcu.PA8 mcu.PA9 mcu.PA10 mcu.PA11 mcu.PA12 mcu.PA15 \
+       mcu.PB0 mcu.PB1 mcu.PB2 mcu.PB3 mcu.PB4 mcu.PB5 mcu.PB8 mcu.PB9 \
+       mcu.PC6 mcu.PC14 mcu.PC15 note="unspent C092 GPIO"
+}

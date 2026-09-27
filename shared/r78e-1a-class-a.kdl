@@ -1,0 +1,26 @@
+// The R-78E5.0-1.0 input network used by ARC's LIN motor and reader nodes.
+// Recom's Class A row calls for 10 µF / 12 µH / 10 µF. The Bourns SRN4018
+// family skips 12 µH, so the original Rust board chose the 15 µH, 1 A member.
+// Keep this local until the pinned parts library offers that 1 A feature.
+use "@stackup/passives"
+use "@stackup/power/brick/r78e"
+
+block r78e1a-class-a {
+    port in type=power
+    port filtered type=power {
+        set net.voltage "in.voltage"
+    }
+    port out type=power
+
+    place inductor L value="15µH" footprint="Inductor_SMD:L_Bourns-SRN4018" intent=filter \
+        note="SRN4018-150M, 1 A: Recom 1 A Class A input choke"
+    circuit in.rail L filtered.rail
+    circuit in.gnd filtered.gnd
+    place bulk Csupply node=in.rail rail=in value="10µF" \
+        note="Class A filter, supply side of choke"
+    place bulk Cconverter node=filtered.rail rail=filtered value="10µF" \
+        note="Class A filter, converter side of choke"
+
+    place r78e5v0-1a brick in=filtered designator=V5_BUCK
+    connect power from=brick.out to=out
+}

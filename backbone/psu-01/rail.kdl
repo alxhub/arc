@@ -1,0 +1,142 @@
+// block/psu-01/rail — power entry to the switched backbone rail: one input in, one deliberate
+// decision out. Ported from arc's `block::psu_01::rail`.
+//
+// A DC input — the layout's own track voltage, from the same DIN-rail unit a district takes, on
+// the same screw block — lands on VPWR behind a transient clamp and its bulk, and VPWR reaches the
+// backbone only through a default-off high-side switch the MCU must deliberately close. One
+// INA226 sits past that switch, on the rail that actually leaves. The logic brick runs off VPWR,
+// *before* the switch — the whole architecture in one fact: the MCU is alive to decide about the
+// backbone, rather than powered by its own decision.
+//
+// What the port is testing:
+//
+// - **A sheet that provides two rails and demands one.** `vpwr` and `vlink` set their windows
+//   here — the terminal admits the layout's DIN-rail unit and nothing else, and the switch is a
+//   pass element, so both carry BACKBONE_V — and `logic` is what the monitor runs off.
+// - **A rail written through its monitor.** The sense block is a series element, so the switched
+//   rail reads in flow order: the switch's output, the shunt, VLINK.
+// - **Names live on the sheet's ports.** VPWR, GND and VLINK are set on the port lines, once, and
+//   every other statement about those nets composes nothing.
+
+use "@stackup/passives"
+use "@stackup/discrete/diode/tvs"
+use "@stackup/discrete/fet/bss138"
+use "@stackup/discrete/fet/dmp3013"
+use "@stackup/sensor/current/ina226"
+use "../../shared/connectors.kdl"
+
+block rail {
+    // The 3.3 V the monitor runs off — what the sheet demands from the board.
+    port logic type=power
+
+    // The board rail as the terminal brings it: BACKBONE_V, 12–18 V — the N-scale setting less the
+    // cable allowance the bus already gives away, up to the HO rail with an installer's trim above
+    // it. Provided, pre-switch, live whenever the DC input is. Nothing here is isolated, so it
+    // stands on the return the logic rail arrives on: this is the one node in the system that is
+    // not isolated from the star, and the pour is called GND.
+    port vpwr type=power {
+        set net.voltage min="12V" max="18V"
+        line rail { set net.name "VPWR" }
+        line gnd { set net.name "GND" }
+    }
+
+    // The switched rail: VPWR through the link switch and the monitor's shunt, present only while
+    // `enable` is held high. The same window, because the switch is a pass element and the
+    // terminal admits nothing outside it — so closing the switch is right by construction, and
+    // what firmware still owes the star is the readback (see `enable`).
+    port vlink type=power {
+        set net.voltage min="12V" max="18V"
+        line rail { set net.name "VLINK" }
+    }
+
+    // The switch enable — high closes the switch and energises the backbone; undriven is off.
+    // Nothing on this board measures VPWR itself: the monitor sits downstream, so a mis-trimmed
+    // supply is caught by nothing until the switch is closed and the first bus-voltage reading
+    // comes back. That reading is the whole of the readback — close, read, open again if the
+    // number is wrong.
+    port enable type=output
+
+    // The monitor's bus and its open-drain alert, for a host that wants the interrupt.
+    port i2c type=i2c
+    port alert
+
+    // --- The DC leg: terminal block, transient clamp, bulk ----------------------------------------
+    //
+    // Nothing measures the leg itself — see the one monitor, downstream of the switch.
+    scope dc {
+        // The same screw block the districts take, so one enclosure cut-out and one wiring
+        // practice cover every node in the cabinet. VPWR on the silk: an installer lands the
+        // supply on it.
+        place dc-input in designator=VPWR \
+            note="DC input — the layout's track-family supply, trimmed to land 13 V for N or 16 V for HO on the rail, and its return"
+        circuit in.VDC vpwr.rail
+        circuit in.GND vpwr.gnd
+
+        // The reservoir on the raw input — a property of that supply, internal to the sheet. Its
+        // can is stated: VPWR derates to the 50 V rung, and 47 µF at 50 V is a 6.3 × 7.7 mm body
+        // rather than the 5 × 5.8 default.
+        place bulk Cbulk node=vpwr.rail rail=vpwr value="47µF" footprint="Capacitor_SMD:CP_Elec_6.3x7.7" \
+            note="the input reservoir — effectively on VLINK too, through a switch some tens of milliohms wide"
+
+        // The surge clamp: an 18 V standoff, at what the input is specified for — it stands off
+        // everything the supply's dial can be set to and conducts on nothing short of a surge.
+        // This is the *whole* of the input's overvoltage story: anything above the layout's own
+        // rail on this terminal is out of spec rather than survivable.
+        place tvs clamp value="SMBJ18A" note="SMBJ18A transient clamp — the input's whole overvoltage story"
+        circuit vpwr.rail clamp vpwr.gnd
+    }
+
+    // --- The link switch ----------------------------------------------------------------------------
+    //
+    // VPWR in, the backbone rail out, off by default. The block brings the default-off gate
+    // pull-up, the soft-start cap and the series resistor; what this sheet adds is the driver that
+    // lets a push-pull GPIO work the open-drain gate node. The DMP3013's Vgs limit is ±25 V, and
+    // at the rail's 18 V ceiling that is seven volts of margin, fully enhanced (Ron is specified at
+    // −10 V) and nothing to fit — the block's assertion holds that, and a Zener reappearing on the
+    // gate would mean the rail had been raised without it being recomputed.
+    place high-side-switch switch in=vpwr designator=LNK_SW
+
+    // The gate driver: enable high closes the switch. Its pulldown is what makes "undriven" and
+    // "off" the same state, which is the negotiate-then-energise contract in copper: an
+    // unprogrammed MCU, a held reset, a half-booted board all leave the backbone dark.
+    place bss138 driver note="low-side gate driver — enable high pulls the P-gate down"
+    circuit driver.drain switch.gate-drive
+    circuit driver.source vpwr.gnd
+    circuit enable driver.gate name="LINK_EN"
+    place pull-down enable-pd node=driver.gate rail=vpwr value="100kΩ" \
+        note="enable pulldown — an undriven enable leaves the backbone dark"
+
+    // --- The monitor, on the far side of the switch ---------------------------------------------
+    //
+    // The rail that actually leaves for the star, measured where it leaves. Nothing else sits on
+    // VLINK, so the current reading is the backbone's own draw with no subtraction, and the bus
+    // voltage doubles as the switch-closed readback. What it gives up is the supply itself — the
+    // board cannot watch the DC unit sag under the star's load.
+    //
+    // 20 mΩ, not the districts' 5 mΩ. The backbone's ceiling is the cable: Cat 5 takes 500 mA per
+    // conductor, the port doubles the rail and its return onto two conductors each, and a node
+    // feeds a run out of *both* jacks — so 2 A is the most this rail can carry before the copper is
+    // the limit. At 20 mΩ that is 40 mV across the INA226's ±81.92 mV span: half scale, so a
+    // genuine overcurrent still reads rather than saturating, with a 125 µA quantum. 0.08 W at 2 A
+    // leaves the 2512 essentially cold. 1 % — this monitor protects nothing (the switch is
+    // default-off and firmware decides), so what the number is *for* is knowing how much of the
+    // cable's budget the star is using, and a percent is what a metal-element part comes at.
+    place ina226-sense monitor shunt="20mΩ" vs=logic i2c=i2c alert=alert designator=MON
+    circuit switch.out.rail monitor vlink.rail
+    // The node between the drain and the shunt: not a rail anything uses, and named so a probe
+    // on the switch side of the monitor has a word for where it is.
+    circuit switch.out.rail name="switch/out"
+    circuit vlink.gnd vpwr.gnd
+    circuit logic.gnd vpwr.gnd
+
+    // The one capacitance on the switched rail, and it is not a reservoir: the switch is a pass
+    // element and the bulk above is effectively on this node already, and the switch block ramps
+    // both edges. What this is for is the *port*. VLINK leaves on a field cable, and every other
+    // node meets that cable with its converter's 10 µF at its jack; this would otherwise be the
+    // one VLINK jack in the system with nothing on it, and what the cable brings in would land on
+    // the monitor's VIN−/VBUS pins directly. 1 µF on the rail's rung is an 0805 X7R: the HF return
+    // the port wants, and small enough not to become a second bulk charged through the shunt on
+    // every close.
+    place bypass port-bypass node=vlink.rail rail=vlink value="1µF" footprint="Capacitor_SMD:C_0805_2012Metric" \
+        note="port capacitor — the HF return at the jacks, not a reservoir"
+}

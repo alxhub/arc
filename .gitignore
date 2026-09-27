@@ -1,0 +1,11 @@
+# Machine-specific library checkout override.
+manifest.local.kdl
+.stackup/cache/
+
+# KiCad editor state and backups.
+*.kicad_prl
+*-backups/
+~*.lck
+
+# KiCad autosaves.
+_autosave-*

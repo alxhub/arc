@@ -1,0 +1,13 @@
+(version 1)
+
+# Custom design rules for hat-01. KiCad reads `<board>.kicad_dru` from the board's own directory;
+# Board Setup → Design Rules → Custom Rules is an editor for this file, so opening that dialog and
+# pressing OK will write back whatever it has buffered.
+#
+# A custom rule beats the netclass for the constraint it names. Where two rules match the same pair
+# of objects, the *last* one in the file wins — so a rule added below this one and matching the
+# same objects takes it over, not the other way round.
+#
+# This board carries no custom rules. The mounting hardware's copper keep-outs are rule areas on
+# the board itself (`hat_hole_*`, Ø6.5 mm on F.Cu and B.Cu at each of the HAT's four holes),
+# because the HAT land draws its holes on Edge.Cuts and nothing else keeps a screw head off a pour.

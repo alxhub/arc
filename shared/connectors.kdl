@@ -1,0 +1,241 @@
+// arc's own connectors: pinouts that are contracts, fixed before any board exists. Ported from
+// `shared::connector`. They live here rather than in the core library because there is nothing
+// standard about them — a 5.08 mm terminal is a body, not a pinout, and an 8P8C jack is eight
+// contacts with no opinion about what is on them. What these add is what arc puts on it.
+
+// The DC input: the board's supply rail and its return. The first thing on the product and the
+// only conductor pair that arrives from outside the system entirely, so it is the one place a
+// reversed pair is a plausible field mistake rather than a design one.
+//
+// **Two bodies, one pinout.** `screw` is the plain MKDS block and is what a placement gets if it
+// says nothing; `plug` is the board half of a pluggable MSTB terminal, where the installer's wire
+// lands on a plug that comes away with the loom. Which one a board wants is a fact about the
+// *enclosure* rather than about the input, so it is a body a placement chooses (`package=plug`),
+// not a second part with the same two names on it. The two bodies are two Phoenix products, so
+// the order numbers hang on the body.
+//
+// What arrives is the board's to say, not the connector's: the sheet that places it sets the
+// rail's window on its own port.
+part dc-input {
+    symbol "Connector_Generic:Conn_01x02"
+    reference J
+    description "DC input terminal — the track-family supply and its return"
+    datasheet "https://www.mouser.com/datasheet/3/507/8/phoenix_contact_1729128_en.pdf"
+    manufacturer "Phoenix Contact"
+
+    pin VDC passive
+    pin GND passive
+
+    package screw footprint="TerminalBlock_Phoenix:TerminalBlock_Phoenix_MKDS-1,5-2-5.08_1x02_P5.08mm_Horizontal" {
+        order mpn="1729128" mouser="651-1729128" lcsc=C7509570
+        pad VDC 1
+        pad GND 2
+    }
+    package plug footprint="Connector_Phoenix_MSTB:PhoenixContact_MSTBA_2,5_2-G-5,08_1x02_P5.08mm_Horizontal" {
+        order mpn="1757242" mouser="651-1757242" lcsc=C90074
+        pad VDC 1
+        pad GND 2
+    }
+
+    port VDC pin=VDC
+    port GND pin=GND
+}
+
+// One district's two track rails on a removable two-position terminal.
+part rail-output {
+    symbol "Connector_Generic:Conn_01x02"
+    reference J
+    description "District track output — RAIL_A and RAIL_B"
+    manufacturer "Phoenix Contact"
+    pin A passive
+    pin B passive
+    package screw footprint="TerminalBlock_Phoenix:TerminalBlock_Phoenix_MKDS-1,5-2-5.08_1x02_P5.08mm_Horizontal" {
+        order mpn="1729128" mouser="651-1729128" lcsc=C7509570
+        pad A 1
+        pad B 2
+    }
+    package plug footprint="Connector_Phoenix_MSTB:PhoenixContact_MSTBA_2,5_2-G-5,08_1x02_P5.08mm_Horizontal" {
+        order mpn="1757242" mouser="651-1757242" lcsc=C90074
+        pad A 1
+        pad B 2
+    }
+    port A pin=A
+    port B pin=B
+}
+
+// The backbone port as an **8P8C jack**: the six conductors of the star cable, allocated onto four
+// twisted pairs so the cable between two nodes can be a patch lead.
+//
+// ```
+// 1 VLINK   the backbone rail, with its return on the same pair
+// 2 GND
+// 3 VLINK   and again on the next pair
+// 6 GND
+// 4 CANH    the CAN FD pair
+// 5 CANL
+// 7 DCC_A   the RS-485 pair carrying the DCC sync
+// 8 DCC_B
+// ```
+//
+// Every conductor is on a real pair. A differential pair split across two twists is a pair only
+// on the schematic; CAN takes 4/5 and DCC takes 7/8, each of them one twist end to end. The rail
+// is doubled onto the two pairs that are left: down two pairs of stranded 24 AWG it drops half of
+// what one does, and T568A and T568B differ *only* in swapping the pairs on 1/2 and 3/6, so a
+// patch lead crossed at one end swaps VLINK for VLINK and GND for GND and nothing notices. Put
+// the two buses on those positions instead and a crossover cable would land CAN on the DCC
+// receiver.
+//
+// No shell: the body is an unshielded jack, so there is no shield conductor to route at a node
+// that may or may not be isolated.
+part backbone-jack {
+    symbol "Connector:RJ45"
+    reference J
+    description "backbone jack — 8P8C: the layout's rail on two pairs, the CAN pair and the DCC pair"
+    manufacturer "Amphenol ICC"
+    order mpn="54602-908LF" mouser="649-54602-908LF" lcsc=C2847314
+
+    pin VLINK passive
+    pin GND passive
+    pin CANH passive
+    pin CANL passive
+    pin DCC_A passive
+    pin DCC_B passive
+
+    package rj45 footprint="Connector_RJ:RJ45_Amphenol_54602-x08_Horizontal" {
+        pad VLINK 1
+        pad VLINK 3
+        pad GND 2
+        pad GND 6
+        pad CANH 4
+        pad CANL 5
+        pad DCC_A 7
+        pad DCC_B 8
+    }
+
+    port VLINK pin=VLINK
+    port GND pin=GND
+    port CANH pin=CANH
+    port CANL pin=CANL
+    port DCC_A pin=DCC_A
+    port DCC_B pin=DCC_B
+}
+
+// A land for an SPI display module: the eight-pin header the Waveshare LCD Module family and its
+// clones carry, in their order.
+//
+// ```
+// 1 VCC   the module's supply — 3.3 V here
+// 2 GND
+// 3 DIN   SPI data into the module (the controller's MOSI)
+// 4 CLK   SPI clock
+// 5 CS    chip select, active low
+// 6 DC    data / command — high for pixels, low for a command
+// 7 RST   reset, active low
+// 8 BL    backlight enable — or a PWM, for a backlight that dims
+// ```
+//
+// A contract rather than a plain header because the order is somebody else's: an ST7789 module
+// from Waveshare, in 1.3", 1.54" or 2", carries exactly this row and plugs straight on, and so
+// does most of what the same catalogues sell under other controllers. There is **no MISO** — a
+// display takes pixels and answers nothing the controller reads over the bus, and the modules
+// carry no conductor for one — so its `spi` port has a clock and data and no line back.
+part display-header {
+    symbol "Connector_Generic:Conn_01x08"
+    reference J
+    description "SPI display header — VCC, GND, DIN, CLK, CS, DC, RST, BL on 0.1in pins"
+    datasheet "https://www.waveshare.com/wiki/1.3inch_LCD_Module"
+    manufacturer "Würth Elektronik"
+    order mpn="61300811121" mouser="710-61300811121"
+
+    pin VCC passive
+    pin GND passive
+    pin DIN passive
+    pin CLK passive
+    pin CS passive
+    pin DC passive
+    pin RST passive
+    pin BL passive
+
+    package header footprint="Connector_PinHeader_2.54mm:PinHeader_1x08_P2.54mm_Vertical" {
+        pad VCC 1
+        pad GND 2
+        pad DIN 3
+        pad CLK 4
+        pad CS 5
+        pad DC 6
+        pad RST 7
+        pad BL 8
+    }
+
+    // The modules take 3.3 V or 5 V and run their logic at 3.3 V either way; what this header
+    // exports is the board's logic rail. What hangs on the far end states nothing here.
+    port vcc type=power {
+        require net.voltage min="3.0V" max="5.5V"
+        line rail pin=VCC
+        line gnd pin=GND
+    }
+
+    // Write-only: the module's DIN is the controller's MOSI, and there is no MISO conductor, so
+    // the port has no `miso` line and a link onto it says `nc miso`.
+    port spi type=spi {
+        line sck pin=CLK
+        line mosi pin=DIN
+    }
+
+    // The conductors that are neither the bus nor the supply, each a pin the board spends. The
+    // backlight is worth a timer channel: one that cannot dim is one at full brightness in a dark
+    // cabinet.
+    port cs type=output pin=CS
+    port dc type=output pin=DC
+    port rst type=output pin=RST
+    port bl type=pwm pin=BL
+}
+
+// The backbone port as the **six-way screw block**: everything the star cable carries, on one
+// MKDS 1,5 body — the same Phoenix range the DC input is on.
+//
+// ```
+// 1 GND     the backbone rail's return — the link-side ground, and not the board's
+// 2 VLINK   the backbone rail
+// 3 DCC_A   the RS-485 pair carrying the DCC sync
+// 4 DCC_B
+// 5 CANL    the CAN FD pair
+// 6 CANH
+// ```
+//
+// A part rather than a generic six-way block: this pinout is a contract every node on the star
+// agrees to, settled before any board exists. It carries power and both pairs on one body
+// because a node has **one** cable to the wiring centre, and the pairs are adjacent because a
+// twisted pair wants its two conductors next to each other on the block as well as in the cable.
+// The same six names as `backbone-jack`, so a sheet wires either body with the same statements.
+part backbone-port {
+    symbol "Connector_Generic:Conn_01x06"
+    reference J
+    description "backbone port — the layout's rail and its return, the DCC pair and the CAN pair"
+    datasheet "https://www.mouser.com/datasheet/3/507/9/phoenix_contact_1710726_en.pdf"
+    manufacturer "Phoenix Contact"
+    order mpn="1710726" mouser="651-1710726" lcsc=C6042367
+
+    pin VLINK passive
+    pin GND passive
+    pin CANH passive
+    pin CANL passive
+    pin DCC_A passive
+    pin DCC_B passive
+
+    package screw footprint="TerminalBlock_Phoenix:TerminalBlock_Phoenix_MKDS-1,5-6-5.08_1x06_P5.08mm_Horizontal" {
+        pad GND 1
+        pad VLINK 2
+        pad DCC_A 3
+        pad DCC_B 4
+        pad CANL 5
+        pad CANH 6
+    }
+
+    port VLINK pin=VLINK
+    port GND pin=GND
+    port CANH pin=CANH
+    port CANL pin=CANL
+    port DCC_A pin=DCC_A
+    port DCC_B pin=DCC_B
+}

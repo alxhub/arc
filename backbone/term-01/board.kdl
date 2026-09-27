@@ -1,0 +1,68 @@
+// ARC-TERM-01: passive end of a backbone run. One jack, CAN and DCC
+// terminations, a power pilot, and measurement lands.
+
+use "@stackup/passives"
+use "@stackup/mechanical"
+use "@stackup/discrete/led/led"
+use "../../shared/connectors.kdl"
+
+block backbone-entry {
+    port link type=power {
+        set net.voltage min="12V" max="18V"
+        line rail { set net.name "VLINK" }
+        line gnd { set net.name "VLINK_GND" }
+    }
+    port canh
+    port canl
+    port dcc-a
+    port dcc-b
+    place backbone-jack port designator=LNK
+    circuit port.VLINK link.rail
+    circuit port.GND link.gnd
+    circuit port.CANH canh
+    circuit port.CANL canl
+    circuit port.DCC_A dcc-a
+    circuit port.DCC_B dcc-b
+}
+
+design term-01 {
+    stock {
+        packages imperial="0805"
+        derating voltages="16V 25V 50V"
+        tracks "0.2mm 0.25mm 0.3mm 0.4mm 0.8mm 1.0mm 2.0mm"
+    }
+
+    // One port marks the end of the run. The backbone feed is the only supply.
+    place backbone-entry entry
+
+    // 62 Ω + 62 Ω terminates CAN; the centre tap sinks common-mode noise.
+    // Every passive is 0805 so this small board can be assembled by hand.
+    place resistor Rh value="62Ω" intent=termination footprint="Resistor_SMD:R_0805_2012Metric"
+    place resistor Rl value="62Ω" intent=termination footprint="Resistor_SMD:R_0805_2012Metric"
+    place capacitor Csplit value="4.7nF" intent=filter footprint="Capacitor_SMD:C_0805_2012Metric" \
+        note="rated for the backbone rail if a lead is crossed"
+    circuit entry.canh Rh name="CANH"
+    circuit Rh.b Rl.a Csplit.a name="CAN_MID"
+    circuit Rl.b entry.canl name="CANL"
+    circuit Csplit.b entry.link.gnd
+
+    // The DCC timing pair has a plain 120 Ω termination.
+    place resistor Rterm value="120Ω" intent=termination footprint="Resistor_SMD:R_0805_2012Metric"
+    circuit entry.dcc-a Rterm name="DCC_A"
+    circuit Rterm.b entry.dcc-b name="DCC_B"
+
+    place indicator pilot rail=entry.link r="5.1kΩ" limit="4mA" resistor-body="Resistor_SMD:R_0805_2012Metric" designator=PWR \
+        note="backbone power at the end of the run"
+
+    // Lands are set back from the jack for a probe; drilled returns hold a clip.
+    place test-point tp-canh at=entry.canh package=pad designator=H
+    place test-point tp-canl at=entry.canl package=pad designator=L
+    place test-point tp-dcca at=entry.dcc-a package=pad designator=A
+    place test-point tp-dccb at=entry.dcc-b package=pad designator=B
+    place test-point tp-rail at=entry.link.rail package=pad designator="V+"
+    place test-point tp-can-return at=entry.link.gnd package=hole
+    place test-point tp-dcc-return at=entry.link.gnd package=hole
+
+    place mounting-hole "mount/w"
+    place mounting-hole "mount/e"
+}

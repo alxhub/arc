@@ -1,0 +1,88 @@
+// block/psu-01/bar — the supply node's light bar: eight addressable pixels along one board edge,
+// lighting a printed translucent bar in the enclosure wall, on a 5 V rail that exists for them and
+// for nothing else. Ported from arc's `block::psu_01::bar`.
+//
+// A pixel is a 5 V part — its blue die is an InGaN junction at ~3 V, and 3.3 V is under the
+// WS2812B's 3.7 V floor, not merely short of margin. The obvious way to get 5 V, a 5 V buck feeding
+// a 3.3 V LDO, is wrong on this board for a reason that has nothing to do with the bar: this board
+// *exports* its 3.3 V on two Qwiic lands, and an LDO behind a 5 V stage would have put a panel's
+// budget through 1.7 V of drop in a SOT-23-5. So the logic rail stays a switcher, the bar brings a
+// brick of its own, and the two keep their own input networks: at the 12 V floor the logic brick
+// draws ~0.15 A and this one ~0.46 A, and 0.61 A is more than a 4 × 4 mm SRN4018 carries at either
+// value.
+//
+// What the port is testing:
+//
+// - **No repetition.** Eight pixels are eight placements and seven chain statements, and the
+//   order of the chain — which *is* the addressing — is in the source where a reader can check it.
+// - **A rail sized by what states itself.** Every pixel adds 60 mA, so the brick's 1 A assertion
+//   sees 480 mA from the pixels; the shifter states nothing, and the check says it holds for what
+//   is stated.
+// - **A choke held to the brick's rating at the floor the board feeds it.** The Class B network's
+//   68 µH SRN4018 carries 0.5 A, and from 12 V the 1 A member draws just under that at full load;
+//   from the part's own 8 V floor it would not, and the brick's assertion says so with the numbers.
+
+use "@stackup/passives"
+use "@stackup/power/brick/r78e"
+use "@stackup/logic/ahct1g125"
+use "@stackup/discrete/led/ws2812b"
+
+block bar {
+    // VPWR — the board rail the brick runs from, pre-switch like the logic brick, so the bar can
+    // say the board is alive before the backbone is. The only thing the sheet takes from the board.
+    port vpwr type=power
+    // The stream in: the MCU's 3.3 V data line, ahead of the shifter — a DMA-fed timer channel
+    // clocking the pixels' 800 kbps NZR code out as a duty-cycle sequence.
+    port data type=pwm {
+        require signal.dma
+    }
+
+    // The bar's own brick: a 1 A R-78E making 5 V from VPWR, with the Class B network the logic
+    // brick beside it also carries — a product in a cabinet, not a jig. The 5 V member asks no
+    // minimum load, so an idle bar owes nothing. 5V_BUCK on the silk, for the rail it makes.
+    place r78e5v0-1a brick in=vpwr designator="5V_BUCK" {
+        with emc-class-b
+    }
+    circuit brick.out.rail name="5V"
+
+    // The shifter: 3.3 V in, 5 V out. A pixel wants its high at 70 % of its own supply, and a
+    // 3.3 V pin is under that by enough to flicker; the AHCT input takes 2.0 V as high, so the
+    // MCU's stream goes in as it is and comes out at the rail.
+    place ahct1g125 shifter vcc=brick.out
+    circuit data shifter.in
+
+    // The pixels, chained in order. No series resistor between the shifter and the head: the
+    // 330 Ω a string on a cord wants is for the reflection off an unterminated lead and for a lead
+    // plugged in live, and a few centimetres of trace on the board that makes the rail has
+    // neither. Each pixel brings its own 100 nF.
+    scope pixels {
+        place ws2812b-2020 p1 vdd=brick.out
+        place ws2812b-2020 p2 vdd=brick.out
+        place ws2812b-2020 p3 vdd=brick.out
+        place ws2812b-2020 p4 vdd=brick.out
+        place ws2812b-2020 p5 vdd=brick.out
+        place ws2812b-2020 p6 vdd=brick.out
+        place ws2812b-2020 p7 vdd=brick.out
+        place ws2812b-2020 p8 vdd=brick.out
+
+        circuit shifter.out p1.din name="DIN"
+        circuit p1.dout p2.din name="p1/out"
+        circuit p2.dout p3.din name="p2/out"
+        circuit p3.dout p4.din name="p3/out"
+        circuit p4.dout p5.din name="p4/out"
+        circuit p5.dout p6.din name="p5/out"
+        circuit p6.dout p7.din name="p6/out"
+        circuit p7.dout p8.din name="p7/out"
+
+        // The end of the bar. The last pixel's DOUT carries the stream on to nothing, and says
+        // so: the bar is copper on this board, not a string with a header at the end.
+        nc p8.DOUT \
+            note="the end of the bar — the last pixel's DOUT carries the stream on to nothing; there is no header, because the bar is copper on this board and not a string"
+    }
+
+    // The reservoir at the head of the string: 10 µF ceramic, for the comb of edges eight pixels'
+    // PWM puts on the rail between the brick's own output and the first per-pixel bypass. Well
+    // inside the 220 µF the 1 A member allows across its output.
+    place bulk Cres node=brick.out.rail rail=brick.out value="10µF" \
+        note="the bar's reservoir — eight pixels' PWM edges, at the head"
+}

@@ -1,0 +1,4 @@
+(fp_lib_table
+  (version 7)
+  (lib (name "stackup")(type "KiCad")(uri "${KIPRJMOD}/stackup.pretty")(options "")(descr "Lands stackup carries because KiCad does not ship them"))
+)

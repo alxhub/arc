@@ -1,0 +1,3 @@
+// Shared parts library used by the ported ARC boards.
+stackup "0.1"
+library stackup git="https://github.com/stackup-eda/library" rev="26b67d3420e44b177ff3be6ffa8301124b5f881b"

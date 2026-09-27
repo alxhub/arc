@@ -1,0 +1,29 @@
+// HAT-specific cabinet terminals. The control feed is unswitched 24 V.
+part control-input {
+    symbol "Connector_Generic:Conn_01x02"
+    reference J
+    description "24 V control supply input"
+    manufacturer "Phoenix Contact"
+    order mpn="1729128" mouser="651-1729128"
+    pin VDC passive
+    pin GND passive
+    package screw footprint="TerminalBlock_Phoenix:TerminalBlock_Phoenix_MKDS-1,5-2-5.08_1x02_P5.08mm_Horizontal" {
+        pad VDC 1
+        pad GND 2
+    }
+}
+
+// A1 and the auxiliary contact's far end are wired to VCTL in the cabinet.
+part contactor-port {
+    symbol "Connector_Generic:Conn_01x02"
+    reference J
+    description "Master contactor coil return and auxiliary-contact return"
+    manufacturer "Phoenix Contact"
+    order mpn="1729128" mouser="651-1729128"
+    pin AUX passive
+    pin A2 passive
+    package screw footprint="TerminalBlock_Phoenix:TerminalBlock_Phoenix_MKDS-1,5-2-5.08_1x02_P5.08mm_Horizontal" {
+        pad AUX 1
+        pad A2 2
+    }
+}

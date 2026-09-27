@@ -1,0 +1,23 @@
+// A field wired DC input. The TVS and reservoir are behind the ideal diode:
+// a reverse wired supply cannot drive the unidirectional clamp into a short.
+use "@stackup/passives"
+use "@stackup/power/ideal_diode/ltc4359"
+use "@stackup/discrete/diode/tvs"
+use "../../shared/connectors.kdl"
+
+block district-entry {
+    port vpwr type=power {
+        set net.voltage min="12V" max="18V"
+        line rail { set net.name "VPWR" }
+        line gnd { set net.name "GND" }
+    }
+    place dc-input in designator=DC
+    place ltc4359-diode diode
+    circuit in.VDC diode.anode name="DC_IN"
+    circuit in.GND diode.gnd vpwr.gnd
+    circuit diode.cathode vpwr.rail
+    place tvs clamp value=SMBJ18A
+    circuit vpwr.rail clamp vpwr.gnd
+    place bulk bulk node=vpwr.rail rail=vpwr value="47µF" footprint="Capacitor_SMD:CP_Elec_6.3x7.7" \
+        note="entry reservoir behind reverse polarity protection"
+}

@@ -1,0 +1,115 @@
+// ARC-TRK-SRV-01: eight servos, a DAC bell, and three signal lamps on one LIN node.
+use "@stackup/passives"
+use "@stackup/types"
+use "@stackup/mechanical"
+use "@stackup/connector/header"
+use "@stackup/connector/qwiic"
+use "@stackup/connector/swd"
+use "@stackup/micro/stm32g0b1"
+use "../../shared/r78e-1a-class-a.kdl"
+use "@stackup/power/ldo/ap2112k"
+use "@stackup/discrete/led/led"
+use "../../shared/lin.kdl"
+use "../../shared/lamp.kdl"
+use "../../shared/pixels.kdl"
+use "./servos.kdl"
+use "./bell.kdl"
+
+design trk-srv-01 {
+    stock {
+        packages imperial="0402"
+        derating voltages="16V 25V 50V"
+        tracks "0.2mm 0.25mm 0.3mm 0.4mm 0.8mm 1.0mm 2.0mm"
+    }
+
+    place lin-node node
+    // The 1 A R-78E uses the original Class A input filter.
+    // The cable's V5 remains only on the two pass-through jacks.
+    place r78e1a-class-a v5 in=node.vpwr
+    place stm32g0b1 mcu vdd=node.v3v3 package=qfn48 designator=STM32
+    place servos servos rail=v5.out
+    place bell bell rail=v5.out
+    place pixels pixels rail=v5.out
+    place indicator reg-led rail=node.v3v3 designator=REG
+    place indicator v5-led rail=v5.out r="1.5kΩ" designator=V5
+
+    // LIN requires USART1's break detection and auto-baud on PB6/PB7. The
+    // node port exposes the SBC's UART directions; join physical TXD to PB6
+    // and RXD to PB7 explicitly so the interface does not cross them twice.
+    circuit mcu.PB6 node.link.rx name="lin/txd"
+    circuit mcu.PB7 node.link.tx name="lin/rxd"
+
+    // TIM2 and TIM3 each run four 50 Hz servo pulse channels. The explicit
+    // pin table is firmware's channel map; no lamp PWM shares those periods.
+    connect pwm { from mcu node=PA0; to servos.p1 }
+    connect pwm { from mcu node=PA1; to servos.p2 }
+    connect pwm { from mcu node=PA2; to servos.p3 }
+    connect pwm { from mcu node=PA3; to servos.p4 }
+    connect pwm { from mcu node=PA6; to servos.p5 }
+    connect pwm { from mcu node=PA7; to servos.p6 }
+    connect pwm { from mcu node=PB0; to servos.p7 }
+    connect pwm { from mcu node=PB1; to servos.p8 }
+    connect output from=mcu.PB12 to=servos.enable
+
+    // PA4 is DAC1_OUT1. KDL currently has no DAC peripheral link type, so
+    // this physical pin choice must be kept in step with firmware.
+    circuit mcu.PA4 bell.input name="bell/in"
+    connect output from=mcu.PB13 to=bell.enable
+
+    // One signal head: VPWR common on pin 1, three switched cathodes on 2–4.
+    place conn-1x4 lamp-head designator=LED
+    circuit lamp-head.1 node.vpwr.rail
+    place lamp lamp1 rail=node.vpwr
+    place lamp lamp2 rail=node.vpwr
+    place lamp lamp3 rail=node.vpwr
+    circuit lamp1.cathode lamp-head.2 name="lamps/K1"
+    circuit lamp2.cathode lamp-head.3 name="lamps/K2"
+    circuit lamp3.cathode lamp-head.4 name="lamps/K3"
+    // TIM1's first three channels are PA8, PA9, PA10.
+    connect pwm { from mcu node=PA8; to lamp1.gate }
+    connect pwm { from mcu node=PA9; to lamp2.gate }
+    connect pwm { from mcu node=PA10; to lamp3.gate }
+    place rail-sense sense rail=node.vpwr
+    connect analog from=mcu.PB10 to=sense.tap
+
+    connect output from=mcu.PB5 to=pixels
+
+    // The expansion port is on a switched 3.3 V LDO off the board's 5 V.
+    // PB2 rests low, and the I²C pull-ups follow the switched output.
+    scope expansion {
+        place ap2112k3v3 ldo in=v5.out { without always-on }
+        place bulk Cbulk node=ldo.out.rail rail=ldo.out value="10µF" \
+            footprint="Capacitor_SMD:C_1210_3225Metric" note="hot-plug reservoir at Qwiic"
+        place pull-down en-pulldown node=ldo.en rail=ldo.out value="100kΩ"
+        place i2c-pull-ups pulls rail=ldo.out
+        place qwiic port vcc=ldo.out designator=I2C
+        connect output from=mcu.PB2 to=ldo.en
+        connect i2c { from mcu sda=PB9 scl=PB8; to port }
+        connect i2c from=port to=pulls
+    }
+
+    place swd-header swd vref=node.v3v3 designator=SWD
+    connect swd { from mcu swdio=PA13 swclk=PA14 nrst=PF2; to swd }
+    circuit node.reset swd.RESET name="nrst"
+
+    scope tp {
+        place test-point lin at=node.lin package=pad designator=LIN
+        place test-point v3v3 at=node.v3v3.rail package=pad designator="3V3"
+        place test-point local5 at=v5.out.rail package=pad designator="5V"
+        place test-point gnd at=node.vpwr.gnd package=loop designator=GND
+    }
+    place mounting-hole "mount/nw"
+    place mounting-hole "mount/ne"
+    place mounting-hole "mount/sw"
+    place mounting-hole "mount/se"
+    place fiducial "fid/0"
+    place fiducial "fid/1"
+    place fiducial "fid/2"
+
+    // Unused GPIO, including the second DAC pad PA5. No crystal is fitted:
+    // LIN resynchronizes on each sync byte. No CAN or USB function is used.
+    nc mcu.PC13 mcu.PC14 mcu.PC15 mcu.PF0 mcu.PF1 mcu.PA5 mcu.PA15 \
+       mcu.PB3 mcu.PB4 mcu.PB11 mcu.PB14 mcu.PB15 mcu.PA11 mcu.PA12 \
+       mcu.PC6 mcu.PC7 mcu.PD0 mcu.PD1 mcu.PD2 mcu.PD3 \
+       note="unspent G0B1 GPIO"
+}

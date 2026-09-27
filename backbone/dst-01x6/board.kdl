@@ -1,0 +1,204 @@
+// ARC-DST-01x6: six bridge districts behind one shunt and ideal diode.
+use "@stackup/passives"
+use "@stackup/types"
+use "@stackup/mechanical"
+use "@stackup/connector/swd"
+use "@stackup/micro/stm32c092"
+use "@stackup/clock/ecs2520mv"
+use "@stackup/power/brick/r78k"
+use "@stackup/interface/expander/tca9534"
+use "@stackup/logic/lvc1g86"
+use "@stackup/logic/lvc1g3157"
+use "@stackup/discrete/led/led"
+use "../../shared/connectors.kdl"
+use "../../shared/arc-link.kdl"
+use "./entry.kdl"
+use "./rail.kdl"
+use "./district.kdl"
+use "./adc.kdl"
+use "./thermal.kdl"
+
+design dst-01x6 {
+    stock {
+        packages imperial="0402"
+        derating voltages="16V 25V 50V"
+        tracks "0.2mm 0.25mm 0.3mm 0.4mm 0.8mm 1.0mm 2.0mm"
+    }
+    place district-entry dc
+    place r78k3v3 logic in=dc.vpwr designator="3V3_BUCK" { with emc-class-b }
+    place district-rail track vpwr=dc.vpwr logic=logic.out
+    place district-thermal thermal vpwr=dc.vpwr logic=logic.out
+    place arc-link link host=logic.out { with jacks; with dcc }
+    place indicator v3v3-led rail=logic.out r="680Ω" designator=REG
+    place test-point tp-gnd at=dc.vpwr.gnd package=loop designator=GND
+
+    place stm32c092 mcu vdd=logic.out package=lqfp48 designator=STM32
+    place ecs2520mv osc vdd=logic.out value="40MHz"
+    circuit osc.out mcu.PF0 name="hse"
+    place test-point tp-hse at=mcu.PF0 package=pad designator=HSE
+    circuit mcu.VREF+ logic.out.rail
+    connect can { from mcu rx=PD0 tx=PD1; to link }
+    circuit link.link-good mcu.PB9 name="link/good"
+
+    // Instrument I2C1: monitor and two thermometers, addresses 0x40, 0x48, 0x49.
+    place i2c-pull-ups mon-pulls rail=logic.out
+    connect i2c { from mcu sda=PB7 scl=PB6; to track.i2c }
+    connect i2c from=track.i2c to=thermal.i2c
+    connect i2c from=track.i2c to=mon-pulls
+    circuit track.alert mcu.PB5 name="nALERT"
+    // Control I2C2: separate from measurement. Each expander owns a triple.
+    place i2c-pull-ups ctl-pulls rail=logic.out
+    place tca9534 expander0 vdd=logic.out offset=0 designator=IO0
+    place tca9534 expander1 vdd=logic.out offset=1 designator=IO1
+    connect i2c { from mcu sda=PB4 scl=PB3; to expander0 }
+    connect i2c from=expander0.i2c to=expander1.i2c
+    connect i2c from=expander0.i2c to=ctl-pulls
+    circuit expander0.INT expander1.INT name="nINT"
+    nc expander0.P3 expander0.P7 expander1.P3 expander1.P7 note="spare expander lines"
+
+    // This booster listens to the recovered DCC sync and never enables the link driver.
+    place resistor Rdcc value="33Ω" intent=series
+    circuit link.dcc-rxd Rdcc name="DCC_RO"
+    circuit Rdcc.b mcu.PA15 name="DCC"
+    place test-point tp-dcc at=mcu.PA15 package=pad designator=DCC
+    circuit link.dcc-txd logic.out.rail
+    circuit mcu.PB8 name="DCC_PROG"
+    place test-point tp-prog at=mcu.PB8 package=pad designator=PRGM
+
+    place swd-header swd vref=logic.out designator=SWD
+    connect swd { from mcu swdio=PA13 swclk=PA14 nrst=PF2; to swd }
+    circuit swd.swd.nrst name="nrst"
+    circuit mcu.PD2 thermal.enable name="fan/en"
+    nc mcu.PF1 mcu.PB15 mcu.PC6 mcu.PC7 mcu.PA12 mcu.PD3 note="unspent pins"
+    place test-point tp-sda at=track.i2c.sda package=pad designator=SDA
+    place test-point tp-scl at=track.i2c.scl package=pad designator=SCL
+    // District 0: P0 sleeps it; P4 selects its service range and stream.
+    place district d0 drive=track.vtrk logic=logic.out
+    circuit track.vref d0.vref
+    place lvc1g86 xor0 vcc=logic.out
+    place lvc1g3157 mux0 vcc=logic.out
+    circuit mcu.PA15 xor0.A
+    circuit mcu.PC14 xor0.B name="PHASE0"
+    circuit xor0.Y mux0.Y1 name="STREAM0"
+    circuit mcu.PB8 mux0.Y0
+    circuit expander0.P4 mux0.S d0.nprog name="nPROG0"
+    place resistor Rterm0 value="22Ω" intent=series
+    circuit mux0.Z Rterm0 d0.signal name="SIGNAL0"
+    connect pwm { from mcu node=PA0; to d0.gate }
+    circuit expander0.P0 d0.sleep
+    circuit mcu.PC13 d0.fault
+    place district-adc adc0 logic=logic.out sense=d0.sense
+    connect analog from=mcu.PA1 to=adc0.adc
+    place rail-output rail0 designator=TRK1
+    circuit d0.a rail0.A
+    circuit d0.b rail0.B
+    // District 1: P1 sleeps it; P5 selects its service range and stream.
+    place district d1 drive=track.vtrk logic=logic.out
+    circuit track.vref d1.vref
+    place lvc1g86 xor1 vcc=logic.out
+    place lvc1g3157 mux1 vcc=logic.out
+    circuit mcu.PA15 xor1.A
+    circuit mcu.PC15 xor1.B name="PHASE1"
+    circuit xor1.Y mux1.Y1 name="STREAM1"
+    circuit mcu.PB8 mux1.Y0
+    circuit expander0.P5 mux1.S d1.nprog name="nPROG1"
+    place resistor Rterm1 value="22Ω" intent=series
+    circuit mux1.Z Rterm1 d1.signal name="SIGNAL1"
+    connect pwm { from mcu node=PA2; to d1.gate }
+    circuit expander0.P1 d1.sleep
+    circuit mcu.PF3 d1.fault
+    place district-adc adc1 logic=logic.out sense=d1.sense
+    connect analog from=mcu.PA3 to=adc1.adc
+    place rail-output rail1 designator=TRK2
+    circuit d1.a rail1.A
+    circuit d1.b rail1.B
+    // District 2: P2 sleeps it; P6 selects its service range and stream.
+    place district d2 drive=track.vtrk logic=logic.out
+    circuit track.vref d2.vref
+    place lvc1g86 xor2 vcc=logic.out
+    place lvc1g3157 mux2 vcc=logic.out
+    circuit mcu.PA15 xor2.A
+    circuit mcu.PA5 xor2.B name="PHASE2"
+    circuit xor2.Y mux2.Y1 name="STREAM2"
+    circuit mcu.PB8 mux2.Y0
+    circuit expander0.P6 mux2.S d2.nprog name="nPROG2"
+    place resistor Rterm2 value="22Ω" intent=series
+    circuit mux2.Z Rterm2 d2.signal name="SIGNAL2"
+    connect pwm { from mcu node=PA6; to d2.gate }
+    circuit expander0.P2 d2.sleep
+    circuit mcu.PA7 d2.fault
+    place district-adc adc2 logic=logic.out sense=d2.sense
+    connect analog from=mcu.PA4 to=adc2.adc
+    place rail-output rail2 designator=TRK3
+    circuit d2.a rail2.A
+    circuit d2.b rail2.B
+    // District 3: P0 sleeps it; P4 selects its service range and stream.
+    place district d3 drive=track.vtrk logic=logic.out
+    circuit track.vref d3.vref
+    place lvc1g86 xor3 vcc=logic.out
+    place lvc1g3157 mux3 vcc=logic.out
+    circuit mcu.PA15 xor3.A
+    circuit mcu.PB10 xor3.B name="PHASE3"
+    circuit xor3.Y mux3.Y1 name="STREAM3"
+    circuit mcu.PB8 mux3.Y0
+    circuit expander1.P4 mux3.S d3.nprog name="nPROG3"
+    place resistor Rterm3 value="22Ω" intent=series
+    circuit mux3.Z Rterm3 d3.signal name="SIGNAL3"
+    connect pwm { from mcu node=PB1; to d3.gate }
+    circuit expander1.P0 d3.sleep
+    circuit mcu.PB2 d3.fault
+    place district-adc adc3 logic=logic.out sense=d3.sense
+    connect analog from=mcu.PB0 to=adc3.adc
+    place rail-output rail3 designator=TRK4
+    circuit d3.a rail3.A
+    circuit d3.b rail3.B
+    // District 4: P1 sleeps it; P5 selects its service range and stream.
+    place district d4 drive=track.vtrk logic=logic.out
+    circuit track.vref d4.vref
+    place lvc1g86 xor4 vcc=logic.out
+    place lvc1g3157 mux4 vcc=logic.out
+    circuit mcu.PA15 xor4.A
+    circuit mcu.PB13 xor4.B name="PHASE4"
+    circuit xor4.Y mux4.Y1 name="STREAM4"
+    circuit mcu.PB8 mux4.Y0
+    circuit expander1.P5 mux4.S d4.nprog name="nPROG4"
+    place resistor Rterm4 value="22Ω" intent=series
+    circuit mux4.Z Rterm4 d4.signal name="SIGNAL4"
+    connect pwm { from mcu node=PA11; to d4.gate }
+    circuit expander1.P1 d4.sleep
+    circuit mcu.PB12 d4.fault
+    place district-adc adc4 logic=logic.out sense=d4.sense
+    connect analog from=mcu.PB11 to=adc4.adc
+    place rail-output rail4 designator=TRK5
+    circuit d4.a rail4.A
+    circuit d4.b rail4.B
+    // District 5: P2 sleeps it; P6 selects its service range and stream.
+    place district d5 drive=track.vtrk logic=logic.out
+    circuit track.vref d5.vref
+    place lvc1g86 xor5 vcc=logic.out
+    place lvc1g3157 mux5 vcc=logic.out
+    circuit mcu.PA15 xor5.A
+    circuit mcu.PB14 xor5.B name="PHASE5"
+    circuit xor5.Y mux5.Y1 name="STREAM5"
+    circuit mcu.PB8 mux5.Y0
+    circuit expander1.P6 mux5.S d5.nprog name="nPROG5"
+    place resistor Rterm5 value="22Ω" intent=series
+    circuit mux5.Z Rterm5 d5.signal name="SIGNAL5"
+    connect pwm { from mcu node=PA9; to d5.gate }
+    circuit expander1.P2 d5.sleep
+    circuit mcu.PA10 d5.fault
+    place district-adc adc5 logic=logic.out sense=d5.sense
+    connect analog from=mcu.PA8 to=adc5.adc
+    place rail-output rail5 designator=TRK6
+    circuit d5.a rail5.A
+    circuit d5.b rail5.B
+    // Layout: twelve filled and capped thermal vias under each bridge PowerPAD,
+    // 3 x 4 on a 1.35 x 1.3 mm grid, with the specified 0.6 / 0.3 mm process.
+    place mounting-hole "mount/nw"
+    place mounting-hole "mount/ne"
+    place mounting-hole "mount/sw"
+    place mounting-hole "mount/se"
+    place fiducial "fid/0"
+    place fiducial "fid/1"
+    place fiducial "fid/2"
+}

@@ -1,0 +1,75 @@
+// block/psu-01/console — a diagnostic port: USB-C in, a UART out, and a barrier between them so
+// a laptop never touches the star's return. Ported from arc's `block::psu_01::console`.
+//
+// Three parts in a row. The USB-C sheet, data-only — receptacle, Rd on both CC pins, the ESD
+// array, and no blocking leg, because nothing on this board runs off the cable. A CP2102N bridge
+// in its bus-powered arrangement, which *does* run off the cable: VBUS into its regulator, and the
+// 3.3 V it makes is the island's rail. And an ISO6721B with one channel each way, its far side on
+// that island rail and its host side on the board's 3.3 V. The MCU sees a UART; the laptop sees a
+// serial port; the cable's shell and the board's ground never meet.
+//
+// Why a bridge and not a peripheral: the C092 is the C0 die with FDCAN where the C071 has USB,
+// and there is no variant with both. Why an island: this is the one node whose ground *is* the
+// backbone's return, and a laptop on mains puts that return on the building's earth through the
+// cable's shell — the exact loop every other node's barrier exists to break, arriving from the
+// outside. No part on the island is powered by the board, so with the cable out the island is
+// simply dark, and the barrier's default-high output is what the MCU's RXD reads then: an idle
+// line, not a break. That is the B in ISO6721B.
+//
+// What the port is testing:
+//
+// - **Two returns that never meet, said by two power ports on one part.** The isolator's `host`
+//   and `far` map different ground pins, and nothing in this block joins them: the island is a
+//   second net set, and its name says whose it is.
+// - **A UART crossed twice, once per link.** The bridge's serial side meets the isolator's far
+//   face in one `connect`, the MCU meets the host face in another (on the board), and the type's
+//   `match` does each crossover — so the block's `uart` is the host face re-exported line by
+//   line, never a third `connect`.
+
+use "@stackup/passives"
+use "@stackup/types"
+use "@stackup/bus/usb/cp2102n"
+use "@stackup/isolator/iso6721"
+use "../../shared/usb.kdl"
+
+block console {
+    // The board's 3.3 V — the isolator's host side, and the only thing on this sheet that is on
+    // the board's ground. What the sheet demands.
+    port logic type=power
+    // The serial side, at the barrier: the sheet transmits on the isolator's OUTA and receives on
+    // its INB. The MCU's link crosses them over.
+    port uart type=uart
+
+    // The port. The sheet mints the cable's rail on the cable's own return, and nothing here ties
+    // that return to the board; the island begins at the shell. USB on the silk.
+    place usb-port port
+    circuit port.vbus.rail name="VBUS"
+    circuit port.vbus.gnd name="USB_GND"
+
+    // The bridge, off the cable: VBUS into its regulator, its UART out on the 3.3 V it makes. The
+    // cable's Rd is what makes a source put 5 V on the pair at all, and the sense divider on the
+    // bridge is what tells it the cable is there.
+    place cp2102n bridge vbus=port.vbus designator=USB_UART
+    connect usb from=bridge to=port
+    circuit bridge.vdd.rail name="3V3_USB"
+
+    // The barrier: one channel each way, the far side on the bridge's 3.3 V and the near side on
+    // the board's. The island's link is joined from the isolator's far face to the bridge's
+    // serial side, and the host face is this block's `uart`.
+    place iso6721b iso host=logic far=bridge.vdd designator=USB_ISO
+    connect uart from=iso.far-uart to=bridge.uart
+    circuit uart.tx iso.host-uart.tx
+    circuit uart.rx iso.host-uart.rx
+
+    // What the bridge carries and the board does not spend. The modem-control inputs have weak
+    // pull-ups on the die; the outputs drive nothing; the GPIO are unconfigured. DTR/RTS are not
+    // wired to reset and boot: the C0 keeps boot selection in option bytes, and entering the ROM
+    // later is firmware's rather than a modem line's.
+    nc bridge.RI bridge.CTS bridge.DSR bridge.DCD \
+        note="modem-control inputs — weak pull-ups on the die, no peer to drive them"
+    nc bridge.RTS bridge.DTR bridge.SUSPEND bridge.SUSPENDB \
+        note="modem-control and suspend outputs — the console carries data only"
+    nc bridge.GPIO0 bridge.GPIO1 bridge.GPIO2 bridge.GPIO3 \
+        note="GPIO — unconfigured; the bridge's job here is the one UART"
+    nc bridge.NC note="the part's own NC"
+}

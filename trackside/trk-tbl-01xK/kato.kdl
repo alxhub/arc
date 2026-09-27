@@ -1,0 +1,37 @@
+// Kato 20-283's original eight-way cable. JST PA side-entry socket.
+// 1 index contact, 2 return, 3/4 rotation motor, 5/6 lock motor,
+// 7/8 bridge rails. The last pair belongs to a separate DCC district.
+part kato-turntable {
+    symbol "Connector_Generic:Conn_01x08"
+    reference J
+    description "Kato 20-283 turntable cable"
+    datasheet "https://www.jst-mfg.com/product/pdf/eng/ePA-F.pdf"
+    manufacturer JST
+    order mpn="S08B-PASK-2(LF)(SN)" mouser="306-S08BPASK2LFSN"
+    pin INDEX passive
+    pin GND passive
+    pin ROT_A passive
+    pin ROT_B passive
+    pin LOCK_A passive
+    pin LOCK_B passive
+    pin TRK_A passive
+    pin TRK_B passive
+    package pa8 footprint="stackup:JST_PA_S08B-PASK-2_1x08_P2.00mm_Horizontal" {
+        pad INDEX 1
+        pad GND 2
+        pad ROT_A 3
+        pad ROT_B 4
+        pad LOCK_A 5
+        pad LOCK_B 6
+        pad TRK_A 7
+        pad TRK_B 8
+    }
+    port INDEX pin=INDEX
+    port GND pin=GND
+    port ROT_A pin=ROT_A
+    port ROT_B pin=ROT_B
+    port LOCK_A pin=LOCK_A
+    port LOCK_B pin=LOCK_B
+    port TRK_A pin=TRK_A
+    port TRK_B pin=TRK_B
+}

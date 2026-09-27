@@ -1,0 +1,33 @@
+// Hirose FH12, bottom contacts for a 0.3 mm tail. Three contacts per
+// antenna end share RF current. The symmetrical pinout tolerates reversal.
+part antenna-port {
+    symbol "Connector_Generic_MountingPin:Conn_01x06_MountingPin"
+    reference J
+    description "NFC antenna port: A on 1–3, B on 4–6"
+    datasheet "https://www.hirose.com/product/p/CL0586-0582-5-55"
+    manufacturer Hirose
+    order mpn="FH12-6S-0.5SH(55)" mouser="798-FH12-6S-0.5SH55"
+    pin 1 passive
+    pin 2 passive
+    pin 3 passive
+    pin 4 passive
+    pin 5 passive
+    pin 6 passive
+    pin MP passive symbol=MountPin
+    package fpc footprint="Connector_FFC-FPC:Hirose_FH12-6S-0.5SH_1x06-1MP_P0.50mm_Horizontal" {
+        pad 1 1
+        pad 2 2
+        pad 3 3
+        pad 4 4
+        pad 5 5
+        pad 6 6
+        pad MP "MP"
+    }
+    port a1 pin=1
+    port a2 pin=2
+    port a3 pin=3
+    port b4 pin=4
+    port b5 pin=5
+    port b6 pin=6
+    port mount pin=MP
+}

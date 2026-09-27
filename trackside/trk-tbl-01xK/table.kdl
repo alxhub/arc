@@ -1,0 +1,116 @@
+use "@stackup/passives"
+use "@stackup/connector/header"
+use "@stackup/driver/motor/drv8874"
+use "@stackup/isolator/fodm214"
+use "./kato.kdl"
+
+block table {
+    // Firmware interlocks the motors so this is one 600 mA motor budget.
+    port drive type=power { add net.draw "600mA" }
+    // Driver logic, pull-ups, and the optional home sensor reserve 15 mA.
+    port logic type=power { add net.draw "15mA" }
+    port rotate-en type=pwm
+    port rotate-ph
+    port rotate-sense type=analog
+    port lock-en type=pwm
+    port lock-ph
+    port lock-sense type=analog
+    port sleep
+    port fault
+    port vref-pwm type=pwm
+    port index
+    port home
+    port track-a
+    port track-b
+    port track-present
+
+    place kato-turntable port designator=KATO_TURNTABLE
+    circuit port.GND drive.gnd logic.gnd
+
+    // One motor runs at a time: the 1 A brick budgets 600 mA for it.
+    // The 100 µF can and each bridge's 10 µF ceramic serve distinct
+    // commutation and current-chop loops. Total output capacitance stays
+    // under the R-78E's 220 µF ceiling.
+    place bulk reservoir node=drive.rail rail=drive value="100µF" \
+        footprint="Capacitor_SMD:CP_Elec_6.3x5.8" note="motor startup reservoir"
+    place bulk rotate-vm node=drive.rail rail=drive value="10µF" \
+        footprint="Capacitor_SMD:C_1210_3225Metric" note="place at rotate VM chop loop"
+    place bulk lock-vm node=drive.rail rail=drive value="10µF" \
+        footprint="Capacitor_SMD:C_1210_3225Metric" note="place at lock VM chop loop"
+
+    // Disable the part's bundled support so this sheet can use one 10 kΩ
+    // pull-up for the wire-ORed nFAULT pair. Recreate its charge-pump and
+    // VM bypass support for each bridge below. Thermal requirement: 3×5
+    // vias on 1.1 mm pitch under each PowerPAD, far side tented.
+    place drv8874 rotate drive=drive logic=logic designator=ROTATE { without support }
+    place drv8874 lock drive=drive logic=logic designator=LOCK { without support }
+    circuit rotate.GND rotate.PGND rotate.PAD drive.gnd
+    circuit lock.GND lock.PGND lock.PAD drive.gnd
+    circuit rotate.PMODE lock.PMODE drive.gnd
+    place bypass rotate-cvm node=rotate.VM rail=drive value="100nF"
+    place bypass lock-cvm node=lock.VM rail=drive value="100nF"
+    place capacitor rotate-cflying value="22nF" intent=filter
+    place capacitor lock-cflying value="22nF" intent=filter
+    circuit rotate.CPH rotate-cflying rotate.CPL
+    circuit lock.CPH lock-cflying lock.CPL
+    place capacitor rotate-cvcp value="100nF" intent=filter
+    place capacitor lock-cvcp value="100nF" intent=filter
+    circuit rotate.VM rotate-cvcp rotate.VCP
+    circuit lock.VM lock-cvcp lock.VCP
+
+    circuit rotate.enable rotate-en name="rotate/EN"
+    circuit rotate.phase rotate-ph name="rotate/PH"
+    circuit lock.enable lock-en name="lock/EN"
+    circuit lock.phase lock-ph name="lock/PH"
+    circuit rotate.sleep lock.sleep sleep name="nSLEEP"
+    circuit rotate.fault lock.fault fault name="nFAULT"
+    place pull-up fault-pullup node=fault rail=logic value="10kΩ"
+    circuit rotate.out-a port.ROT_A name="rotate/A"
+    circuit rotate.out-b port.ROT_B name="rotate/B"
+    // Lock pair crossed to route both output pairs straight to the socket.
+    circuit lock.out-a port.LOCK_B name="lock/B"
+    circuit lock.out-b port.LOCK_A name="lock/A"
+
+    // C092 has no DAC. TIM1_CH1 supplies a 20 kHz PWM through a 10 ms RC.
+    // A 1 MΩ pull-down makes undriven VREF zero, limiting both motors to 0 A.
+    place resistor vref-r value="10kΩ" intent=series
+    circuit vref-pwm vref-r.a name="VREF_PWM"
+    circuit vref-r.b rotate.VREF lock.VREF name="VREF"
+    place filter vref-c node=rotate.VREF rail=logic value="1µF"
+    place pull-down vref-pd node=rotate.VREF rail=logic value="1MΩ"
+
+    // IPROPI scale: 1.21 kΩ gives about 0.545 V per motor ampere.
+    // 10 nF removes bridge chop while leaving end-stop rises visible.
+    circuit rotate.sense rotate-sense name="rotate/ISENSE"
+    circuit lock.sense lock-sense name="lock/ISENSE"
+    place resistor rotate-rsense value="1.21kΩ" intent=series
+    place resistor lock-rsense value="1.21kΩ" intent=series
+    circuit rotate-sense rotate-rsense logic.gnd
+    circuit lock-sense lock-rsense logic.gnd
+    place filter rotate-csense node=rotate-sense rail=logic value="10nF"
+    place filter lock-csense node=lock-sense rail=logic value="10nF"
+
+    // Kato's INDEX contact closes to connector GND. 2.2 kΩ provides
+    // wetting current; 1 kΩ/100 nF protects and filters the MCU input.
+    place pull-up index-pu node=port.INDEX rail=logic value="2.2kΩ"
+    place resistor index-r value="1kΩ" intent=series
+    circuit port.INDEX index-r index name="INDEX"
+    place filter index-c node=index rail=logic value="100nF"
+
+    // Optional home sensor: 3.3 V, open-drain output, ground.
+    place conn-1x3 home-port designator=HOME
+    circuit home-port.1 logic.rail
+    circuit home-port.3 logic.gnd
+    place pull-up home-pu node=home-port.2 rail=logic value="10kΩ"
+    place resistor home-r value="1kΩ" intent=series
+    circuit home-port.2 home-r home name="HOME"
+    place filter home-c node=home rail=logic value="100nF"
+
+    // District rail feed remains floating with respect to board ground.
+    // The AC-input optocoupler alone observes activity across the pair;
+    // its transistor pulls a board-side flag low while track is live.
+    circuit track-a port.TRK_A name="TRK_A"
+    circuit track-b port.TRK_B name="TRK_B"
+    place pair-flag track-flag a=track-a b=track-b observer=logic out=track-present \
+        swing="12V" current="1mA"
+}

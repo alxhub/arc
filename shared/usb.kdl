@@ -1,0 +1,52 @@
+// arc's USB-C port sheet, data-only: the receptacle, Rd on both CC pins, and the ESD array.
+// Ported from `shared::power::usb` placed `data_only` — the variant with the blocking leg (an
+// LTC4359 ideal diode carrying VBUS onto a board's supply rail, with a TVS ahead of it) is not
+// ported, because no KDL board wants it yet.
+//
+// What the port is testing:
+//
+// - **A sheet that sources and demands nothing.** The receptacle is where the cable genuinely
+//   enters the design, so the part's `vbus` port sets the rail and this block hands it on as its
+//   own `vbus`. On its own return: a cable's ground is not the board's until the board says so,
+//   and on a data-only port nothing ever does.
+// - **A USB link with a shunt on it is two connects.** The array taps the pair without advancing
+//   it, so it joins as a second device on the link the connector starts.
+
+use "@stackup/passives"
+use "@stackup/types"
+use "@stackup/connector/usb-c"
+use "@stackup/discrete/diode/usblc6"
+
+block usb-port {
+    // The cable's 5 V, on the cable's own return, before anything.
+    port vbus type=power
+    // The data pair at the connector, for a host or a bridge to thread its link onto.
+    port usb type=usb
+
+    place usb-c-receptacle connector \
+        note="USB-C, data only — the cable powers what is on its own side of the barrier and nothing of the board's"
+    circuit vbus.rail connector.vbus.rail
+    circuit vbus.gnd connector.vbus.gnd connector.shield
+    circuit usb.dp connector.usb.dp
+    circuit usb.dm connector.usb.dm
+
+    // The sink's CC termination — 5.1 kΩ from each CC pin to the cable's return. **This is what
+    // makes the port a port**: a USB-C source applies nothing to VBUS until it sees Rd on a CC
+    // pin, and a receptacle with floating CC lines is a connector that stays dark in every cable
+    // orientation. Both pins get one because either can be the attached one. Named, because Rd is
+    // the one thing on this sheet a person debugging a dead port goes looking for.
+    place pull-down "rd/1" node=connector.cc1 rail=connector.vbus value="5.1kΩ" \
+        note="Rd — the sink's CC termination; without it a source puts nothing on VBUS"
+    place pull-down "rd/2" node=connector.cc2 rail=connector.vbus value="5.1kΩ" \
+        note="Rd on the other CC pin, for the other cable orientation"
+    circuit connector.cc1 name="cc1"
+    circuit connector.cc2 name="cc2"
+
+    // The receptacle is the board's exposed edge, so what the cable can deliver besides power is
+    // clamped right at it. The array shunts the data pair and its rail clamp rides the cable-side
+    // VBUS; with no blocking leg nothing is downstream of that clamp, so no TVS backs it up.
+    place usblc6 esd vbus=connector.vbus
+    connect usb from=connector to=esd
+
+    nc connector.SBU1 connector.SBU2 note="the sideband pair — a USB 2.0 port carries nothing on it"
+}

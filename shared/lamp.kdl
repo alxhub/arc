@@ -1,0 +1,113 @@
+// arc's lamp channel: one low-side lamp off the bus rail, and the divider a bank reads its rail
+// through. Ported from arc's `shared::lamp`.
+//
+// What the port is testing:
+//
+// - **Values are stated; facts are derived; assertions hold facts to bounds.** The Rust block
+//   solved its ballast from the rail's window, so a change two sheets away re-bought the resistor
+//   and nothing said so. Here the ballast is a parameter with a chosen value, and what the rail
+//   does to it is a set of facts the block asserts over: bind the channel to a rail it was not
+//   sized for and the assertion names the resistor and the current, rather than the BOM changing.
+// - **A port carries a fact the block is the only one to know.** The die is off-board, so the
+//   block is what knows the cathode lead sits at the rail less the forward drop. `set net.voltage` on
+//   the cathode port says so; the current is then a fact of that voltage and a named resistance.
+// - **A load that states itself.** `add net.draw current` on the rail port, so a bank of twelve reads
+//   as 45 mA on VPWR.
+// - **A body stated at the placement.** 60 mW in a 1206 rated 250 mW; the project's 0402 would sit
+//   at 95 % of its rating for as long as an aspect is lit. `footprint=` is how a generic part
+//   takes a body the policy would not give it.
+
+use "@stackup/passives"
+use "@stackup/discrete/fet/dmn3404l"
+
+// A common-anode string: VPWR → the LED at the signal → its cathode lead → the ballast on the
+// board → the switch → GND. Run from the rail rather than the regulator, so the heat of standing
+// 16 V above a 2 V die lands in a resistor built for it, and the switch is a sink — an MCU still in
+// reset shows no aspect, which for a railway signal is the safe one.
+block lamp {
+    // Chosen, not solved. 4.3 kΩ is (18 V − 2 V) / 4 mA rounded up to E24, and the assertions
+    // below are what hold that arithmetic.
+    param ballast resistance default="4.3kΩ"
+    // 2.0 V, the smallest drop a signal die has (red, yellow, AlInGaP green), so the ballast's
+    // dissipation is its worst case; an InGaN green or a white at ~3 V just runs a milliamp dimmer.
+    param forward voltage default="2.0V"
+    // What a lamp may draw at the top of the rail — bright in a gallery, a tenth of what a 0603 die
+    // is rated for, and where firmware dims from.
+    param limit current default="4mA"
+
+    // The bus rail the lamp's common anode sits on. The channel draws its peak from it.
+    port rail type=power {
+        add net.draw current
+    }
+    // PWM in — high lights the lamp, and duty is brightness.
+    port gate type=pwm
+    // The lamp's cathode lead, ahead of the ballast. When the lamp is lit it sits at the rail
+    // less the die's drop, with the drain at ground under it. Not named here: the bank that
+    // places the header a lead lands on is the one with a word for it.
+    port cathode {
+        set net.voltage "rail.voltage - forward"
+    }
+
+    derive current "cathode.voltage.max / ballast"
+    derive dim "cathode.voltage.min / ballast"
+    derive watts "cathode.voltage.max * current"
+    text sizing "lamp ballast — {current} at {rail.voltage.max}, {dim} at {rail.voltage.min}; {watts} at the top of the rail in a 1206 rated 250 mW"
+
+    assert "current <= limit" \
+        message="{ballast} lets {current} through at {rail.voltage.max}; the lamp is sized for {limit}"
+    assert "watts <= 125mW" \
+        message="the ballast dissipates {watts} at the top of the rail, over half of a 1206's 250 mW"
+    assert "dim >= 1mA" \
+        message="at {rail.voltage.min} the lamp draws only {dim}, and firmware cannot raise a duty past 100 %"
+
+    // A DMN3404L — logic-level, on at 2.5 V of gate drive where a BSS138 is only just.
+    place dmn3404l switch note="low-side switch — sinks the lamp's cathode through the ballast"
+    circuit switch.source rail.gnd
+
+    // The gate: the MCU's timer channel drives it, and the pull-down is what it rests on when
+    // nothing does. It is the one part here that exists for a failure rather than a function:
+    // with the MCU in reset its pins are high-impedance, and a gate left to float can lift enough
+    // on leakage to light a lamp nobody commanded.
+    place pull-down gate-pulldown node=gate rail=rail value="100kΩ" \
+        note="an undriven gate is a dark lamp — an MCU in reset shows no aspect"
+    circuit gate switch.gate
+
+    // Drain, ballast, cathode. The drain is named because it is where a meter goes to find out
+    // whether a dark lamp is a dead switch or a broken lead.
+    place resistor R value=ballast intent=series footprint="Resistor_SMD:R_1206_3216Metric" note=sizing
+    circuit switch.drain R cathode
+    circuit switch.drain name="drain"
+}
+
+// The rail-sense divider a lamp bank reads its rail through: VPWR × 0.1525 for an ADC pin —
+// 100 kΩ over 18 kΩ is 2.75 V at 18 V, 1.75 V at the floor, and still under 3.3 V with both legs at
+// the wrong end of 1 %. A 100 nF across the tap gives the converter's sample-and-hold something
+// stiff to charge from behind 15 kΩ of source. What firmware does with it: the duty each lamp
+// runs at is (V_nominal − V_f) / (V_measured − V_f) scaled to the aspect's brightness, so a signal
+// looks the same on a 13 V leg as on a 16 V one.
+//
+// The same rule as the lamp: the legs are chosen, the tap's voltage is a fact of them and the
+// rail, and what the tap must stay under is asserted rather than solved for.
+block rail-sense {
+    param high resistance default="100kΩ"
+    param low resistance default="18kΩ"
+    // What the converter reading the tap can take — the MCU's rail, less a margin for both legs
+    // at the wrong end of 1 %.
+    param ceiling voltage default="3.0V"
+
+    port rail type=power
+    port tap type=analog {
+        set net.voltage "rail.voltage * ratio"
+    }
+
+    derive ratio "low / (high + low)"
+    text reading "VPWR × {ratio} for an ADC pin — {tap.voltage.max} at the top of the rail"
+    assert "tap.voltage.max <= ceiling" \
+        message="the tap reaches {tap.voltage.max} at {rail.voltage.max}; the converter takes {ceiling}"
+
+    place resistor Rtop value=high intent=divider note=reading
+    place resistor Rbot value=low intent=divider
+    place filter Cfilter node=tap rail=rail value="100nF" \
+        note="holds the tap stiff for the converter's sample-and-hold"
+    circuit rail.rail Rtop tap Rbot rail.gnd
+}

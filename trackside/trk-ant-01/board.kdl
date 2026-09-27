@@ -1,0 +1,47 @@
+// ARC-TRK-ANT-01 is a passive flex antenna for a nearby NFC reader node.
+// The KiCad spiral footprint is generated from these dimensions in this
+// directory; the tail footprint gives the reader's six-contact pinout.
+// Both are fabricated copper. KDL currently includes them as components in
+// netlists and BOMs; neither is a separately purchased assembly part.
+
+part nfc-coil {
+    symbol "Device:L"
+    reference L
+    description "13.56 MHz planar NFC coil on flex"
+    pin A passive
+    pin B passive
+    package flex footprint="stackup:NFC_Spiral_59x46mm_3T_0.4_0.4" {
+        pad A 1
+        pad B 2
+    }
+    port A pin=A
+    port B pin=B
+}
+
+part antenna-tail {
+    symbol "Connector_Generic:Conn_01x06"
+    reference J
+    description "Six gold fingers on a 0.5 mm pitch; A on 1–3, B on 4–6"
+    pin A passive
+    pin B passive
+    package flex footprint="stackup:FlexTail_1x06_P0.5mm" {
+        pad A 1
+        pad A 2
+        pad A 3
+        pad B 4
+        pad B 5
+        pad B 6
+    }
+    port A pin=A
+    port B pin=B
+}
+
+design trk-ant-01 {
+    // The 59 × 46 mm, three-turn coil is 0.4 mm track with a 0.4 mm gap.
+    // It estimates about 1.64 µH, close to the PN532 breakout antenna used to
+    // select the reader's matching values. Trim matching with rails in place.
+    place nfc-coil coil value="1.64µH" designator=COIL
+    place antenna-tail tail designator=ANT
+    circuit coil.A tail.A name="A"
+    circuit coil.B tail.B name="B"
+}

@@ -1,0 +1,141 @@
+// ARC-YRD-01x8: eight turnout machine channels and sixteen signal lamps.
+use "@stackup/passives"
+use "@stackup/types"
+use "@stackup/mechanical"
+use "@stackup/connector/qwiic"
+use "@stackup/connector/swd"
+use "@stackup/micro/stm32c092"
+use "@stackup/clock/ecs2520mv"
+use "@stackup/power/brick/r78e"
+use "@stackup/power/ldo/ap2112k"
+use "@stackup/discrete/led/led"
+use "@stackup/discrete/led/rgb"
+use "@stackup/discrete/diode/tvs"
+use "../../shared/connectors.kdl"
+use "../../shared/arc-link.kdl"
+use "../../shared/lamp.kdl"
+use "./connectors.kdl"
+use "./machines.kdl"
+use "./signals.kdl"
+use "./adc.kdl"
+
+design yrd-01x8 {
+    stock {
+        packages imperial="0402"
+        derating voltages="16V 25V 50V"
+        tracks "0.2mm 0.25mm 0.3mm 0.4mm 0.8mm 1.0mm 2.0mm"
+    }
+    place dc-input dc designator=VPWR
+    // The field-wired input has a surge clamp but no reverse-polarity diode.
+    place tvs dc-clamp value=SMBJ18A
+    circuit dc.VDC dc-clamp.a
+    circuit dc.GND dc-clamp.b
+    place r78e5v0-0a5 v5 designator="5V_BUCK" { with emc-class-b }
+    // VPWR is the track-family supply; the 5 V switcher and bridges share it.
+    set dc.VDC net.voltage min="12V" max="18V"
+    set dc.VDC net.name "VPWR"
+    set dc.GND net.name "GND"
+    circuit dc.VDC v5.in.rail
+    circuit dc.GND v5.in.gnd
+    place bulk dc-bulk node=dc.VDC rail=v5.in value="47µF" footprint="Capacitor_SMD:CP_Elec_6.3x7.7"
+    place ap2112k3v3 ldo in=v5.out designator="3V3_LDO"
+    place indicator reg-led rail=ldo.out r="680Ω" designator=REG
+    place rgb-indicator status rail=v5.out current="4mA" design-rail-min="4.9V" designator=STATUS
+
+    place machine-bank-drivers machines vpwr=v5.in logic=ldo.out
+    place signal-bank signals logic=ldo.out lamps=v5.out
+    place arc-link link host=ldo.out { with jacks }
+    place stm32c092 mcu vdd=ldo.out package=lqfp48 designator=STM32
+    place ecs2520mv osc vdd=ldo.out value="40MHz"
+    circuit osc.out mcu.PF0 name="hse"
+    place test-point tp-hse at=mcu.PF0 package=pad designator=HSE
+    circuit mcu.VREF+ ldo.out.rail
+    connect can { from mcu rx=PD0 tx=PD1; to link }
+    circuit mcu.PC13 link.link-good name="link/good"
+    // The backbone DCC pair passes through the jacks; this node uses CAN only.
+
+    connect pwm { from mcu node=PA11; to machines.vref-pwm }
+    circuit mcu.PB4 machines.sleep name="nSLEEP"
+    circuit mcu.PB5 machines.fault name="nFAULT"
+    place test-point tp-sleep at=mcu.PB4 package=pad designator=NSLEEP
+    place test-point tp-fault at=mcu.PB5 package=pad designator=NFAULT
+    place test-point tp-gnd at=dc.GND package=loop designator=GND
+    place rail-sense supply-sense rail=v5.in
+    connect analog from=mcu.PA8 to=supply-sense.tap
+    circuit mcu.PC15 status.red name="status/red"
+    circuit mcu.PC14 status.green name="status/green"
+    circuit mcu.PF3 status.blue name="status/blue"
+
+    // I2C1 drives the TLC59116 and is exposed on one Qwiic expansion port.
+    place qwiic expansion vcc=ldo.out designator=I2C
+    place i2c-pull-ups bus-pulls rail=ldo.out
+    connect i2c { from mcu sda=PB7 scl=PB6; to signals.i2c }
+    connect i2c from=signals.i2c to=expansion.i2c
+    connect i2c from=signals.i2c to=bus-pulls
+    place bulk qwiic-bulk node=ldo.out.rail rail=ldo.out value="10µF" footprint="Capacitor_SMD:CP_Elec_5x5.8" \
+        note="reservoir at the exported 3.3 V port"
+
+    place machine-bank bank0 designator=CH0_3
+    place machine-bank bank1 designator=CH4_7
+    circuit mcu.PB0 machines.ch0-ph
+    connect pwm { from mcu node=PB1; to machines.ch0-en }
+    place district-adc adc0 logic=ldo.out sense=machines.ch0-sense
+    connect analog from=mcu.PA0 to=adc0.adc
+    circuit machines.ch0-a bank0.A0
+    circuit machines.ch0-b bank0.B0
+    circuit mcu.PB2 machines.ch1-ph
+    connect pwm { from mcu node=PB10; to machines.ch1-en }
+    place district-adc adc1 logic=ldo.out sense=machines.ch1-sense
+    connect analog from=mcu.PA1 to=adc1.adc
+    circuit machines.ch1-a bank0.A1
+    circuit machines.ch1-b bank0.B1
+    circuit mcu.PB12 machines.ch2-ph
+    connect pwm { from mcu node=PB11; to machines.ch2-en }
+    place district-adc adc2 logic=ldo.out sense=machines.ch2-sense
+    connect analog from=mcu.PA2 to=adc2.adc
+    circuit machines.ch2-a bank0.A2
+    circuit machines.ch2-b bank0.B2
+    circuit mcu.PB13 machines.ch3-ph
+    connect pwm { from mcu node=PB14; to machines.ch3-en }
+    place district-adc adc3 logic=ldo.out sense=machines.ch3-sense
+    connect analog from=mcu.PA3 to=adc3.adc
+    circuit machines.ch3-a bank0.A3
+    circuit machines.ch3-b bank0.B3
+    circuit mcu.PA9 machines.ch4-ph
+    connect pwm { from mcu node=PC6; to machines.ch4-en }
+    place district-adc adc4 logic=ldo.out sense=machines.ch4-sense
+    connect analog from=mcu.PA4 to=adc4.adc
+    circuit machines.ch4-a bank1.A0
+    circuit machines.ch4-b bank1.B0
+    circuit mcu.PA10 machines.ch5-ph
+    connect pwm { from mcu node=PC7; to machines.ch5-en }
+    place district-adc adc5 logic=ldo.out sense=machines.ch5-sense
+    connect analog from=mcu.PA5 to=adc5.adc
+    circuit machines.ch5-a bank1.A1
+    circuit machines.ch5-b bank1.B1
+    circuit mcu.PA12 machines.ch6-ph
+    connect pwm { from mcu node=PA15; to machines.ch6-en }
+    place district-adc adc6 logic=ldo.out sense=machines.ch6-sense
+    connect analog from=mcu.PA6 to=adc6.adc
+    circuit machines.ch6-a bank1.A2
+    circuit machines.ch6-b bank1.B2
+    circuit mcu.PD3 machines.ch7-ph
+    connect pwm { from mcu node=PB3; to machines.ch7-en }
+    place district-adc adc7 logic=ldo.out sense=machines.ch7-sense
+    connect analog from=mcu.PA7 to=adc7.adc
+    circuit machines.ch7-a bank1.A3
+    circuit machines.ch7-b bank1.B3
+    place test-point tp-ch0-ph at=mcu.PB0 package=pad designator=CH0_PH
+    place test-point tp-ch0-en at=mcu.PB1 package=pad designator=CH0_EN
+    place swd-header swd vref=ldo.out designator=SWD
+    connect swd { from mcu swdio=PA13 swclk=PA14 nrst=PF2; to swd }
+    circuit swd.swd.nrst name="nrst"
+    nc mcu.PF1 mcu.PB15 mcu.PB8 mcu.PB9 mcu.PD2 note="unspent pins"
+    place mounting-hole "mount/nw"
+    place mounting-hole "mount/ne"
+    place mounting-hole "mount/sw"
+    place mounting-hole "mount/se"
+    place fiducial "fid/0"
+    place fiducial "fid/1"
+    place fiducial "fid/2"
+}

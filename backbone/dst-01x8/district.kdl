@@ -1,0 +1,45 @@
+// One DRV8874 district. PROG high chooses the service bitstream and range.
+use "@stackup/passives"
+use "@stackup/driver/motor/drv8874"
+use "@stackup/logic/lvc1g3157"
+
+block district {
+    port drive type=power
+    port logic type=power
+    port vref
+    port signal
+    port gate type=pwm
+    port sleep
+    port fault
+    port sense
+    port prog
+    port a
+    port b
+
+    // Layout: twelve filled and capped thermal vias under the bridge PowerPAD,
+    // 3 x 4 on a 1.35 x 1.3 mm grid, 0.6 / 0.3 mm process.
+    place drv8874 bridge drive=drive logic=logic
+    circuit bridge.VREF vref
+    circuit signal bridge.phase name="DCC"
+    circuit gate bridge.enable name="PWM"
+    circuit sleep bridge.sleep name="nSLEEP"
+    circuit fault bridge.fault name="nFAULT"
+    circuit bridge.out-a a name="A"
+    circuit bridge.out-b b name="B"
+    circuit bridge.sense sense name="ISENSE"
+    place pull-down Rsleep node=bridge.sleep rail=logic value="100kΩ"
+
+    // The switch removes the unselected sense resistor and filter completely.
+    // 2.21 kΩ at 2.49 V gives 2.5 A running; 22.1 kΩ gives 250 mA service.
+    place lvc1g3157 range vcc=logic
+    circuit sense range.Z
+    circuit prog range.S
+    place resistor Rrun value="2.21kΩ" intent=series
+    place capacitor Crun value="100nF" intent=filter
+    circuit range.Y0 Rrun logic.gnd
+    circuit range.Y0 Crun logic.gnd
+    place resistor Rprog value="22.1kΩ" intent=series
+    place capacitor Cprog value="10nF" intent=filter
+    circuit range.Y1 Rprog logic.gnd
+    circuit range.Y1 Cprog logic.gnd
+}

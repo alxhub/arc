@@ -1,0 +1,12 @@
+// The MCU's ADC sampling reservoir sits on the MCU side of a 1 kΩ series resistor.
+use "@stackup/passives"
+
+block district-adc {
+    port logic type=power
+    port adc type=analog
+    port sense type=analog
+    place resistor Rseries value="1kΩ" intent=series
+    circuit adc Rseries sense
+    place bypass Cres node=adc rail=logic value="1nF" \
+        note="charge reservoir for the ADC sampling capacitor"
+}

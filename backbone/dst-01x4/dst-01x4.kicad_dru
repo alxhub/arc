@@ -1,0 +1,11 @@
+(version 1)
+
+# Custom design rules for dst-01x4. KiCad reads `<board>.kicad_dru` from the board's own directory;
+# Board Setup → Design Rules → Custom Rules is an editor for this file, so opening that dialog and
+# pressing OK will write back whatever it has buffered.
+#
+# A custom rule beats the board-setup constraint for the thing it names. Where two rules match the
+# same pair of objects, the *last* one in the file wins.
+#
+# No rules today. The board holds 0.2 mm hole-to-copper everywhere, and every land on it clears
+# that; a relaxation scoped to one footprint's geometry is the shape a rule here would take.

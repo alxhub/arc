@@ -1,0 +1,55 @@
+use "@stackup/passives"
+use "@stackup/connector/pi-header"
+use "@stackup/storage/eeprom/cat24c256"
+use "@stackup/connector/jumper"
+
+// Pi header power and ID EEPROM. P3V3 is reserved for the ID EEPROM; the HAT's
+// CAN and Qwiic electronics use a separate local regulator.
+block pi-host {
+    port v5 type=power
+    port id-power type=power
+    port gnd
+    port sda
+    port scl
+    port spi-sck
+    port spi-mosi
+    port spi-miso
+    port spi-cs
+    port can-int
+    port dcc-rxd
+    port link-good
+    port contactor-en
+    port contactor-aux
+
+    place pi-header header designator=PI
+    circuit header.P5V v5.rail
+    circuit header.P3V3 id-power.rail
+    circuit header.GND v5.gnd id-power.gnd gnd
+    circuit header.BCM0_ID_SD id.i2c.sda
+    circuit header.BCM1_ID_SC id.i2c.scl
+    circuit header.BCM2_SDA sda
+    circuit header.BCM3_SCL scl
+    circuit header.BCM11_SCLK spi-sck
+    circuit header.BCM10_MOSI spi-mosi
+    circuit header.BCM9_MISO spi-miso
+    circuit header.BCM8_CE0 spi-cs
+    circuit header.BCM25 can-int
+    circuit header.BCM24 dcc-rxd
+    circuit header.BCM23 link-good
+    circuit header.BCM17 contactor-en
+    circuit header.BCM27 contactor-aux
+
+    place cat24c256 id vdd=id-power designator=ID { without writable; with write-protected }
+    // The HAT ID EEPROM bus needs its own pull-ups on the Pi's 3.3 V ID rail.
+    place pull-up sda_up node=id.i2c.sda rail=id-power value="4.7kΩ"
+    place pull-up scl_up node=id.i2c.scl rail=id-power value="4.7kΩ"
+    place jumper wp designator=PROG
+    circuit id.write-protect wp.A
+    circuit wp.B id-power.gnd
+
+    nc header.BCM4_GPCLK0 header.BCM5 header.BCM6 header.BCM7_CE1 \
+       header.BCM12_PWM0 header.BCM13_PWM1 header.BCM14_TXD header.BCM15_RXD \
+       header.BCM16 header.BCM18_PCM_C header.BCM19_MISO_PCM_FS \
+       header.BCM20_MOSI_PCM_DI header.BCM21_SCLK_PCM_DO header.BCM22 header.BCM26 \
+       note="unspent Pi GPIO; BCM0/1 are reserved for the HAT ID EEPROM"
+}

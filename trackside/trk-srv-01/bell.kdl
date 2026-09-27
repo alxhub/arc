@@ -1,0 +1,21 @@
+use "@stackup/passives"
+use "@stackup/connector/header"
+use "@stackup/audio/pam8302a"
+
+block bell {
+    port rail type=power
+    port input
+    port enable
+    place pam8302a-amplifier amp vdd=rail
+    circuit input amp.input
+    circuit amp.input-return rail.gnd
+    circuit enable amp.shutdown
+    // The shutdown pin must rest low, keeping the amplifier silent until
+    // firmware raises PB13. Raise it before starting DAC samples.
+    place pull-down enable-pulldown node=enable rail=rail value="100kΩ"
+
+    // Bridge-tied output: neither speaker lead is ground.
+    place conn-1x2 speaker designator=SPK
+    circuit amp.speaker-plus speaker.1 name="OUT+"
+    circuit amp.speaker-minus speaker.2 name="OUT-"
+}

@@ -1,0 +1,38 @@
+// arc's pixel channel: one addressable-LED string beside a node's lamps. Ported from
+// `shared::pixels`. A level shifter, a series resistor, a reservoir and a header, run from the
+// cable's 5 V: a WS2812 wants its high at 70 % of its supply, and a 3.3 V pin is under that by
+// enough to flicker; the AHCT input takes 2.0 V as high, so the MCU's stream goes in as it is and
+// comes out at the rail.
+
+use "@stackup/passives"
+use "@stackup/connector/header"
+use "@stackup/logic/ahct1g125"
+
+block pixels {
+    // The pixel rail — what the sheet demands, and the one rail on it.
+    port rail type=power
+    // The stream in: the MCU's 3.3 V data line, ahead of the shifter.
+    port data type=output
+
+    place ahct1g125 shifter vcc=rail
+    circuit data shifter.in
+
+    // The header: rail, data, return — the order a pixel's own pads run. PXL on the silk, whole:
+    // there is one pixel header, and a number after the word would only say so.
+    place conn-1x3 header designator=PXL \
+        note="the pixel string — 5 V on pin 1, data on pin 2, return on pin 3"
+    circuit rail.rail header.1
+
+    // 330 Ω at the head of the string, the value every WS2812 application note puts there: it
+    // damps the reflection off an unterminated lead and limits what the pixel's input sees if
+    // the lead is hot-plugged.
+    place resistor Rdata value="330Ω" intent=series note="series damping at the head of the string"
+    circuit shifter.out Rdata header.2
+    circuit header.2 name="DOUT"
+    circuit rail.gnd header.3
+
+    // What a string's refresh pulls — tens of milliamps switching at the pixel's own PWM rate —
+    // taken from something closer than the hub's buck at the far end of a cord.
+    place bulk Cres node=rail.rail rail=rail value="10µF" \
+        note="the string's reservoir, at the header rather than at the hub"
+}

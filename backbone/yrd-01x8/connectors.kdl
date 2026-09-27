@@ -1,0 +1,87 @@
+// Four machine A/B pairs in terminal order. Dual-coil commons return to the
+// cabinet 0 V bus, never the positive bus: idle bridges hold both outputs low.
+part machine-bank {
+    symbol "Connector_Generic:Conn_01x08"
+    reference J
+    description "four turnout-machine A/B pairs"
+    manufacturer "Phoenix Contact"
+    order mpn=1715789 mouser="651-1715789"
+    pin A0 passive
+    pin B0 passive
+    pin A1 passive
+    pin B1 passive
+    pin A2 passive
+    pin B2 passive
+    pin A3 passive
+    pin B3 passive
+    package block footprint="TerminalBlock_Phoenix:TerminalBlock_Phoenix_MKDS-1,5-8-5.08_1x08_P5.08mm_Horizontal" {
+        pad A0 1
+        pad B0 2
+        pad A1 3
+        pad B1 4
+        pad A2 5
+        pad B2 6
+        pad A3 7
+        pad B3 8
+    }
+}
+
+// Each odd pin is a sink; the following even pin is its 5 V common.
+part signal-header {
+    symbol "Connector_Generic:Conn_02x16_Odd_Even"
+    reference J
+    description "sixteen lamp sink/common columns"
+    manufacturer "Würth Elektronik"
+    order mpn=61303221121 mouser="710-61303221121"
+    pin OUT0 passive
+    pin OUT1 passive
+    pin OUT2 passive
+    pin OUT3 passive
+    pin OUT4 passive
+    pin OUT5 passive
+    pin OUT6 passive
+    pin OUT7 passive
+    pin OUT8 passive
+    pin OUT9 passive
+    pin OUT10 passive
+    pin OUT11 passive
+    pin OUT12 passive
+    pin OUT13 passive
+    pin OUT14 passive
+    pin OUT15 passive
+    pin V passive
+    package header footprint="Connector_PinHeader_2.54mm:PinHeader_2x16_P2.54mm_Vertical" {
+        pad OUT0 1
+        pad OUT1 3
+        pad OUT2 5
+        pad OUT3 7
+        pad OUT4 9
+        pad OUT5 11
+        pad OUT6 13
+        pad OUT7 15
+        pad OUT8 17
+        pad OUT9 19
+        pad OUT10 21
+        pad OUT11 23
+        pad OUT12 25
+        pad OUT13 27
+        pad OUT14 29
+        pad OUT15 31
+        pad V 2
+        pad V 4
+        pad V 6
+        pad V 8
+        pad V 10
+        pad V 12
+        pad V 14
+        pad V 16
+        pad V 18
+        pad V 20
+        pad V 22
+        pad V 24
+        pad V 26
+        pad V 28
+        pad V 30
+        pad V 32
+    }
+}

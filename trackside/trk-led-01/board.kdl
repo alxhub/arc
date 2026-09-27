@@ -1,0 +1,215 @@
+// ARC-TRK-LED-01: the trackside signal node. A small board under a signal stand that lands the
+// signal's LED leads and lights them on command from the hub, over LIN. One cable in, twelve lamps
+// out, and nothing on the board that a second signal would not want exactly the same.
+//
+// Ported from arc's `board::trk_led_01`. Every statement is a join; the why of each is beside it,
+// and the README's arguments are kept where they bear on a statement.
+//
+// What the port is testing, beyond the sheets it places:
+//
+// - **A board that mints no supply.** VPWR arrives on the jack and the node sheet `set`s it there;
+//   the MCU's 3.3 V is that sheet's regulator; the port's rail is an LDO off the cable's 5 V. Every
+//   rail below is a block's port passed on.
+// - **Every MCU link is a `connect`, and every answer is here.** Twenty-two of thirty port pins,
+//   each written down once beside the contract it answers, each movable while routing.
+// - **Budgets that are lower bounds.** The SBC's 70 mA holds the MCU and the pilot; the MCU states
+//   no draw, so the check says it holds for what is stated. The port's 50 mA is the same.
+// - **Deliberate absence.** `nc` is what says a spare pin is spare, so a spare pin that later lands
+//   on a net is a finding rather than a surprise.
+
+use "@stackup/passives"
+use "@stackup/connector/qwiic"
+use "@stackup/connector/swd"
+use "@stackup/types"
+use "@stackup/mechanical"
+use "@stackup/micro/stm32c092"
+use "@stackup/power/ldo/ap2112k"
+use "@stackup/discrete/led/led"
+use "../../shared/lin.kdl"
+use "../../shared/lamp.kdl"   // for `rail-sense`; an import is not transitive
+use "../../shared/pixels.kdl"
+use "./head.kdl"
+
+design trk-led-01 {
+    stock {
+        packages imperial="0402"
+        derating voltages="16V 25V 50V"
+        tracks "0.2mm 0.25mm 0.3mm 0.4mm 0.8mm 1.0mm 2.0mm"
+    }
+
+    // --- The three rails, all the node sheet's --------------------------------------------
+    //
+    // VPWR feeds the lamp bank, whose commons sit on it; the cable's 5 V feeds the pixel channel
+    // and the expansion port's regulator; the SBC's 3.3 V feeds the MCU and the pilot lamp and
+    // nothing else. That split — lamps off the rail, pixels off the hub's 5 V, logic off the
+    // regulator — is the board's first decision.
+    place lin-node node
+    place pixels pixels rail=node.v5
+
+    // Four heads of three aspects: a three-head mast and its dwarf, or a two-head bracket mast
+    // with six spare, or whatever a stand needs that adds to twelve. Each is the block placed
+    // again, so `head3/l2` is a lamp and `LED3` is its header.
+    place head head1 rail=node.vpwr
+    place head head2 rail=node.vpwr
+    place head head3 rail=node.vpwr
+    place head head4 rail=node.vpwr
+
+    // The rail, read once per board: the divider onto an ADC pin, which is what makes a signal
+    // the same brightness on a 13 V leg and a 16 V one.
+    place rail-sense sense rail=node.vpwr
+
+    // The MCU: the part brings its supply circuit — VDD bypassed, the rail's reservoir, the reset
+    // filter on PF2 — so what is left here is the wiring this board chose. The LQFP-32 is said
+    // here rather than left to the part's default, because the body is this board's decision:
+    // twenty-two of its twenty-eight port pins are used, and the pad order the lamp answers
+    // below are read around is that package's. STM32 on the silk, whole: there is one, and the
+    // word tells a person with a probe more than a U and a number.
+    place stm32c092 mcu vdd=node.v3v3 package=lqfp32 designator=STM32
+
+    // The rail's pilot light: the one thing that says the SBC's regulator made its rail, which is
+    // otherwise only observable by the MCU working — and on a board whose other lamps are
+    // commanded, "nothing lit" is the normal state rather than a symptom. The block's defaults
+    // are a 680 Ω pilot on a 3.3 V rail: 2 mA of a 70 mA budget is what a lamp there may cost.
+    place indicator v3v3-led rail=node.v3v3 designator=REG
+
+    // --- The bus link: USART1, LIN mode ---------------------------------------------------
+    //
+    // The node's `link` port requires LIN mode, and USART1 is the one instance that has it — so
+    // PB6/PB7 are checked to be USART1's pair, and which is tx is stated from the MCU's side. The
+    // crossover into the SBC is the `uart` type's.
+    connect uart {
+        from mcu tx=PB6 rx=PB7
+        to node
+    }
+
+    // --- The lamps: twelve timer channels, three per head -----------------------------------
+    //
+    // Which pad each lamp takes is read around the LQFP-32 from its bottom-right corner, so the
+    // two halves of the bank leave opposite sides of the package toward the headers they serve:
+    // heads 1 and 2 take pads 15–22 one way round, heads 3 and 4 take pads 14 down to 7 the
+    // other. Which counter that puts a lamp on is whatever the pins leave: TIM3 carries head 1's
+    // first two and head 3's, TIM1 the rest of heads 1 and 2, TIM2 head 4 — which aligns with
+    // neither the heads nor the numbering and does not have to. A counter is a counter, and
+    // which compare register a lamp lives on is firmware's table.
+    connect head-gates {
+        from mcu l1=PB0 l2=PB1 l3=PA8
+        to head1
+    }
+    connect head-gates {
+        from mcu l1=PA9 l2=PA10 l3=PA11
+        to head2
+    }
+    connect head-gates {
+        from mcu l1=PA7 l2=PA6 l3=PA3
+        to head3
+    }
+    connect head-gates {
+        from mcu l1=PA2 l2=PA1 l3=PA0
+        to head4
+    }
+
+    connect analog from=mcu.PA4 to=sense
+
+    // --- The pixel stream --------------------------------------------------------------------
+    //
+    // One pin, PB5: SPI1_MOSI, which is the peripheral firmware streams the code from with DMA
+    // behind it. Asked for as an output, because a one-wire stream has no pair for the checker to
+    // hold apart — and because nothing in the format yet says "the MOSI of an SPI, alone".
+    connect output from=mcu.PB5 to=pixels
+
+    // --- The expansion port: I²C on Qwiic, on a rail of its own -----------------------------
+    //
+    // The port's rail is not the SBC's. That regulator stands the whole bus rail above 3.3 V in a
+    // SOIC-8, so every milliamp a cable took from it would cost about 14 mW of heat on this board;
+    // the cable's 5 V is 1.7 V above 3.3, so the same milliamp costs 1.7 mW. An AP2112K off the
+    // cable's 5 V makes the port a rail whose budget is the leg's rather than the SBC's junction.
+    //
+    // And the rail is switched, from PB2, held off by a pull-down while the MCU's pins are
+    // high-impedance. Off is what an uncommissioned node shows its port; on is firmware's
+    // decision; and off-then-on is how a slave stuck holding SDA low gets unstuck. The pull-ups
+    // are on the switched rail, so the lines go down with it — on the MCU's rail they would
+    // back-feed an unpowered device through its I/O.
+    scope expansion {
+        place ap2112k3v3 ldo in=node.v5 {
+            without always-on
+        }
+        // The reservoir is placed here rather than asked of the LDO: a hot-plug reservoir behind
+        // a 600 mA LDO on a 3.3 V rail is a 10 µF ceramic, and an accessory plugged in live
+        // charges its input capacitance from here rather than off the LDO's loop.
+        place bulk Cbulk node=ldo.out.rail rail=ldo.out value="10µF" \
+            note="output reservoir — an accessory plugged in live charges its input capacitance from here rather than off the LDO's loop"
+        place pull-down en-pulldown node=ldo.en rail=ldo.out value="100kΩ" \
+            note="holds the port's rail off while the MCU is in reset — a floating enable is a port that powers whatever is on it before anyone decided to"
+        place i2c-pull-ups pulls rail=ldo.out
+        place qwiic port vcc=ldo.out designator=I2C
+
+        // 50 mA is the figure to hold the port to until the hub's allocation says otherwise; the
+        // LDO itself would give 100 mA for a 40 °C rise. Nothing on the port states a draw, so
+        // this holds for what is stated.
+        assert "ldo.out.draw <= 50mA" message="the expansion port's budget is 50mA; it draws {ldo.out.draw}"
+
+        // The MCU's links to the port, written inside the scope so they name its parts by their
+        // bare names: a reference across a scope carries a `/`, which KDL will not take bare.
+        connect output from=mcu.PB2 to=ldo.en
+        // PB8/PB9 are I2C1's pair on the two pads that straddle the LQFP-32's top-left corner —
+        // the one corner the lamps, the link, the pixel stream and SWD all leave alone.
+        connect i2c {
+            from mcu sda=PB9 scl=PB8
+            to port
+        }
+        connect i2c from=port to=pulls
+    }
+
+    // --- Debug, and reset ------------------------------------------------------------------
+    //
+    // A header, because the hub is not an SWD adapter and a LIN slave is not flashable over its
+    // bus. RESET on it is what makes attach-under-reset possible. It is also how a node is
+    // commissioned: its bus address is written into flash with its firmware.
+    place swd-header debug vref=node.v3v3 designator=SWD
+    connect swd {
+        from mcu swdio=PA13 swclk=PA14 nrst=PF2
+        to debug
+    }
+    // The SBC's flag joins the reset node beside the header's RESET: open-drain, low until the
+    // regulator's output is good, so the part that makes the rail supervises it. Joined at the
+    // header's pin rather than at PF2, which the `connect` above already names once.
+    circuit node.reset debug.RESET name="nrst"
+
+    // --- Lands ------------------------------------------------------------------------------
+    //
+    // The bus conductor, because a jack with a cord in it cannot be probed, and a node that hears
+    // nothing is either a dead transceiver or a dead leg — this pad, with the SBC's RxD, says
+    // which. The regulator's rail, because the pilot only says it is there. And the ground a scope
+    // spring goes on.
+    scope tp {
+        place test-point lin at=node.lin package=pad designator=LIN \
+            note="the LIN conductor at the jack — a quiet bus and a dead transceiver look the same from RxD, and this is what splits them"
+        place test-point v3v3 at=node.v3v3.rail package=pad designator="3V3" \
+            note="the SBC's regulated rail — the pilot says it is there, and this is where a probe says it is 3.3 V, and a scope whether it dips when the lamps switch"
+        place test-point gnd at=node.v3v3.gnd package=loop designator=GND \
+            note="scope ground — the rail's return, which is also the cable's"
+    }
+
+    // --- What holds the board, and what finds it --------------------------------------------
+    //
+    // Four unplated holes for a board that screws to the underside of a baseboard, and three
+    // fiducials for the machine that places the surface-mount side.
+    place mounting-hole "mount/nw"
+    place mounting-hole "mount/ne"
+    place mounting-hole "mount/sw"
+    place mounting-hole "mount/se"
+    place fiducial "fid/0"
+    place fiducial "fid/1"
+    place fiducial "fid/2"
+
+    // --- What the board deliberately leaves unspent -----------------------------------------
+    //
+    // On a board a dropped join and a spare pin are the same netlist entry, so the difference has
+    // to be stated or it cannot be checked. The two oscillator pads are among them, and that is
+    // the no-crystal decision made checkable: a LIN slave resynchronises on every frame's sync
+    // byte and is allowed ±14 % before it has, so the HSI's ±1 % is an order of magnitude inside
+    // the budget and PC14/PC15 are plain GPIO. The FDCAN's pins are among them or spent, because
+    // a signal node is a LIN slave and the hub is where LIN meets the backbone.
+    nc mcu.PA5 mcu.PA12 mcu.PA15 mcu.PB3 mcu.PB4 mcu.PC6 mcu.PC14 mcu.PC15 \
+        note="spare — the C092's unspent GPIO, brought to no land. PC14/PC15 are the oscillator pads, free because a LIN slave needs no crystal; the FDCAN pins are here or spent, because this node has no CAN. Everything else is headroom for firmware, not a missing connection"
+}

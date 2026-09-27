@@ -1,0 +1,97 @@
+use "@stackup/passives"
+use "@stackup/types"
+use "@stackup/mechanical"
+use "@stackup/connector/swd"
+use "@stackup/discrete/led/led"
+use "@stackup/power/ldo/ap2112k"
+use "@stackup/micro/stm32c092"
+use "@stackup/clock/ecs2520mv"
+use "@stackup/logic/lvc1g3157"
+use "../../shared/arc-link.kdl"
+use "./host.kdl"
+
+design ex-arc {
+    stock {
+        packages imperial="0402"
+        derating voltages="16V 25V 50V"
+        tracks "0.2mm 0.25mm 0.3mm 0.4mm 0.8mm 1.0mm 2.0mm"
+    }
+
+    // The CSB1's 5 V arrives on the lower Uno land. The local 3.3 V rail
+    // keeps the CAN controller independent of the CSB1's WiFi-loaded IOREF.
+    place csb1-host host
+    place ap2112k3v3 ldo in=host.v5
+    set ldo.out.rail net.name "3V3"
+    place indicator power-led rail=ldo.out r="680Ω" designator=REG
+
+    place stm32c092 mcu vdd=ldo.out package=lqfp48 designator=STM32
+    place ecs2520mv osc vdd=ldo.out value="40MHz"
+    circuit osc.out mcu.PF0 name="hse"
+    place test-point tp-hse at=osc.out package=pad designator=HSE
+    nc mcu.PF1 note="HSE bypass; firmware must use PF0 without remap"
+
+    // CAN FD uses PD0/PD1, the pair the C092 ROM bootloader also listens on.
+    place arc-link link host=ldo.out {
+        with jacks
+        with dcc
+    }
+    connect can { from mcu rx=PD0 tx=PD1; to link }
+    place test-point tp-can-txd at=link.fdcan.tx package=pad designator=CAN_TX
+    place test-point tp-can-rxd at=link.fdcan.rx package=pad designator=CAN_RX
+    circuit link.link-good mcu.PB13 name="link/good"
+
+    // DCC source follows the CSB1's D12 waveform directly, with no MCU in
+    // the bit timing path. PC13 claims the isolated driver when sourcing.
+    circuit host.track-signal link.dcc-txd name="dcc/txd"
+    circuit mcu.PC13 link.dcc-de name="dcc/de"
+    place test-point tp-dcc-txd at=link.dcc-txd package=pad designator=DCC_TX
+    place test-point tp-dcc-de at=link.dcc-de package=pad designator=DCC_DE
+
+    // Inbound DCC goes through a 33 Ω source resistor, then an analog switch
+    // to D7. The low select parks D7 on the open throw while the CSB1 uses
+    // it as its WiFi LED. PC6 captures the waveform independent of that role.
+    place resistor Rdcc value="33Ω" intent=series
+    circuit link.dcc-rxd Rdcc mcu.PC6 name="dcc/rxd"
+    place test-point tp-dcc at=mcu.PC6 package=pad designator=DCC_RX
+    place lvc1g3157 gate vcc=ldo.out
+    circuit mcu.PC6 gate.in1
+    nc gate.Y0 note="open throw parks D7 away from the DCC receiver"
+    circuit gate.common host.booster-input name="booster/input"
+    circuit mcu.PB15 gate.select name="booster/select"
+    place pull-down select-pd node=gate.select rail=ldo.out value="10kΩ"
+
+    // Dedicated peer UART on the intercepted A4/A5 positions, crossed at
+    // the board. The CSB1's D0/D1 console remains connected to its shield.
+    // Host side is ESP32 TX/RX, so MCU RX takes lower A4 and TX takes A5.
+    circuit mcu.PA3 host.tx-host name="host/txd"
+    circuit mcu.PA2 host.rx-host name="host/rxd"
+
+    // Local fault/brake reflex: both shield fault outputs and brake inputs
+    // reach the C092 directly. Reset is driven open-drain by firmware.
+    circuit mcu.PB4 host.brake-c name="brake/c"
+    circuit mcu.PB5 host.brake-d name="brake/d"
+    circuit mcu.PB6 host.fault-c name="fault/c"
+    circuit mcu.PB7 host.fault-d name="fault/d"
+    circuit mcu.PB12 host.reset name="host/reset"
+
+    place swd-header swd vref=ldo.out designator=SWD
+    connect swd { from mcu swdio=PA13 swclk=PA14 nrst=PF2; to swd }
+
+    // Status and CAN traffic lamps are active-low sinks, dark during reset.
+    place driven-led status-led rail=ldo.out sink=mcu.PB10 design-rail-min="3.25V" colour=red
+    place driven-led can-led rail=ldo.out sink=mcu.PB11 design-rail-min="3.25V" colour=red
+    place test-point tp-gnd at=ldo.out.gnd package=loop designator=GND
+
+    place mounting-hole "mount/nw"
+    place mounting-hole "mount/ne"
+    place mounting-hole "mount/e"
+    place mounting-hole "mount/sw"
+    place fiducial "fid/0"
+    place fiducial "fid/1"
+    place fiducial "fid/2"
+
+    nc mcu.PA0 mcu.PA1 mcu.PA4 mcu.PA5 mcu.PA6 mcu.PA7 mcu.PA8 mcu.PA9 mcu.PA10 mcu.PA11 mcu.PA12 mcu.PA15 \
+       mcu.PB0 mcu.PB1 mcu.PB2 mcu.PB3 mcu.PB8 mcu.PB9 mcu.PB14 \
+       mcu.PC7 mcu.PC14 mcu.PC15 mcu.PD2 mcu.PD3 mcu.PF3 \
+        note="unspent LQFP-48 GPIO"
+}

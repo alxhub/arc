@@ -1,0 +1,222 @@
+// ARC-DST-01x4, rev 2: one rail monitor and four independently controlled
+// DRV8874 districts. The track rail is the DC input after a 5 mΩ shunt.
+
+use "@stackup/passives"
+use "@stackup/types"
+use "@stackup/mechanical"
+use "@stackup/connector/qwiic"
+use "@stackup/connector/swd"
+use "@stackup/micro/stm32c092"
+use "@stackup/clock/ecs2520mv"
+use "@stackup/power/brick/r78k"
+use "@stackup/sensor/current/ina226"
+use "@stackup/logic/lvc86"
+use "@stackup/logic/adg734"
+use "@stackup/discrete/diode/tvs"
+use "@stackup/discrete/led/led"
+use "../../shared/connectors.kdl"
+use "../../shared/arc-link.kdl"
+use "./district.kdl"
+use "./indicator.kdl"
+use "./thermal.kdl"
+use "./adc.kdl"
+
+block district-entry {
+    port vpwr type=power {
+        set net.voltage min="12V" max="18V"
+        line rail { set net.name "VPWR" }
+        line gnd { set net.name "GND" }
+    }
+    place dc-input in designator=VPWR \
+        note="the layout's track supply, landed directly on the rail"
+    circuit in.VDC vpwr.rail
+    circuit in.GND vpwr.gnd
+    place bulk bulk node=vpwr.rail rail=vpwr value="47µF" \
+        footprint="Capacitor_SMD:CP_Elec_6.3x7.7" note="entry reservoir, at the terminal and clamp"
+    place tvs clamp value=SMBJ18A
+    circuit vpwr.rail clamp vpwr.gnd
+}
+
+block district-rail {
+    port vpwr type=power
+    port logic type=power
+    port vtrk type=power {
+        set net.voltage min="12V" max="18V"
+        line rail { set net.name "VTRK" }
+        line gnd
+    }
+    port i2c type=i2c
+    port alert
+
+    // Only bridge current crosses this shunt. Bricks and fan stay at VPWR.
+    // BOM requirement from rev 2: Vishay WSLP metal-element, 5 mΩ, 1%, 3 W,
+    // in the 2512 footprint. ina226-sense records value and footprint but does
+    // not enforce manufacturer, tolerance, or power rating.
+    place ina226-sense monitor shunt="5mΩ" vs=logic i2c=i2c alert=alert designator=MON \
+        note="1% metal-element 5 mΩ shunt; four 2.47 A trips read within range"
+    circuit vpwr.rail monitor vtrk.rail
+    circuit vpwr.gnd vtrk.gnd
+    place bulk res node=vtrk.rail rail=vtrk value="220µF" \
+        footprint="stackup:CP_Elec_10x16.5" note="polymer track reservoir: low ESR limits the load-step droop"
+    place bypass hf node=vtrk.rail rail=vtrk value="100nF"
+    place test-point tp-vtrk at=vtrk.rail package=pad designator=VTRK
+}
+
+design dst-01x4 {
+    stock {
+        packages imperial="0402"
+        derating voltages="16V 25V 50V"
+        tracks "0.2mm 0.25mm 0.3mm 0.4mm 0.8mm 1.0mm 2.0mm"
+    }
+
+    // The power split: the track monitor measures the four bridges only.
+    place district-entry dc
+    place r78k3v3 logic in=dc.vpwr designator="3V3_BUCK" { with emc-class-b }
+    place district-rail track vpwr=dc.vpwr logic=logic.out
+    place district-indicator indicator vpwr=dc.vpwr
+    place district-thermal thermal vpwr=dc.vpwr logic=logic.out
+    place arc-link link host=logic.out { with jacks; with dcc }
+
+    place indicator v3v3-led rail=logic.out designator="3V3"
+    place indicator v5-led rail=indicator.v5 r="1.5kΩ" designator="5V"
+    place test-point tp-v3v3 at=logic.out.rail package=pad designator=V3V3
+    place test-point tp-v5 at=indicator.v5.rail package=pad designator=V5
+    place test-point tp-gnd at=dc.vpwr.gnd package=loop designator=GND
+
+    // The C092's 48-pin package keeps one MCU on all district and bus lines.
+    place stm32c092 mcu vdd=logic.out package=lqfp48 designator=STM32
+    place ecs2520mv osc vdd=logic.out value="40MHz"
+    circuit osc.out mcu.PF0 name="hse"
+    place test-point tp-hse at=mcu.PF0 package=pad designator=HSE
+    circuit mcu.VREF+ logic.out.rail
+
+    connect can { from mcu rx=PD0 tx=PD1; to link }
+    circuit link.link-good mcu.PF1 name="link/good"
+
+    // The instrument I²C bus is isolated from the externally exposed Qwiic bus.
+    place i2c-pull-ups mon-pulls rail=logic.out
+    connect i2c { from mcu sda=PB7 scl=PB6; to track.i2c }
+    connect i2c from=track.i2c to=thermal.i2c
+    connect i2c from=track.i2c to=mon-pulls
+    circuit track.alert mcu.PA9 name="nALERT"
+    place test-point tp-sda at=track.i2c.sda package=pad designator=SDA
+    place test-point tp-scl at=track.i2c.scl package=pad designator=SCL
+
+    place i2c-pull-ups exp-pulls rail=logic.out
+    place qwiic expansion vcc=logic.out designator=I2C
+    connect i2c { from mcu sda=PB4 scl=PB3; to expansion }
+    connect i2c from=expansion to=exp-pulls
+    // The expansion reservoir is a 1210 ceramic at the socket.
+    place bulk qwiic-bulk node=logic.out.rail rail=logic.out value="10µF" footprint="Capacitor_SMD:C_1210_3225Metric" \
+        note="reservoir at the far-side expansion socket"
+
+    // The recovered DCC stream has source termination at the ISO1430 receiver.
+    place resistor Rdcc value="33Ω" intent=series
+    circuit link.dcc-rxd Rdcc name="DCC_RO"
+    circuit Rdcc.b mcu.PB8 name="DCC"
+    place test-point tp-dcc at=mcu.PB8 package=pad designator=DCC
+    circuit link.dcc-txd logic.out.rail
+    circuit mcu.PB9 name="DCC_PROG"
+    place test-point tp-prog at=mcu.PB9 package=pad designator=PRGM
+
+    // One XOR per district, followed by the quad SPDT. Low nPROG selects
+    // the service stream and simultaneously leaves the sense at 250 mA.
+    place lvc86 xor vcc=logic.out
+    place adg734 mux vdd=logic.out designator=DCC_OUT
+    circuit mcu.PB8 xor.A_A xor.B_A xor.C_A xor.D_A
+    circuit mcu.PB9 mux.S1B mux.S2B mux.S3B mux.S4B
+
+    // 9.76 kΩ / 30 kΩ from 3.3 V makes the shared 2.49 V trip reference.
+    place resistor Rvref-top value="9.76kΩ" intent=divider
+    place resistor Rvref-bottom value="30kΩ" intent=divider
+    circuit logic.out.rail Rvref-top.a
+    circuit Rvref-top.b Rvref-bottom.a name="VREF"
+    circuit Rvref-bottom.b logic.out.gnd
+    place bypass Cvref node=Rvref-top.b rail=logic.out value="100nF"
+    place test-point tp-vref at=Rvref-top.b package=pad designator=VREF
+
+    place district d0 drive=track.vtrk logic=logic.out
+    place district d1 drive=track.vtrk logic=logic.out
+    place district d2 drive=track.vtrk logic=logic.out
+    place district d3 drive=track.vtrk logic=logic.out
+    circuit Rvref-top.b d0.vref d1.vref d2.vref d3.vref
+
+    // District 0 takes ADG734 channel 2; the physical channel order follows
+    // the rev 2 routing permutation 2, 1, 4, 3.
+    circuit mcu.PA15 xor.A_B name="PHASE0"
+    circuit xor.A_Y mux.S2A name="STREAM0"
+    circuit mcu.PC15 mux.IN2 d0.nprog name="nPROG0"
+    place resistor Rterm0 value="22Ω" intent=series
+    circuit mux.D2 Rterm0 d0.signal name="SIGNAL0"
+    connect pwm { from mcu node=PA0; to d0.gate }
+    circuit mcu.PA6 d0.sleep
+    circuit mcu.PA4 d0.fault
+    place rail-output rail0 designator=TRK1
+    circuit d0.a rail0.A
+    circuit d0.b rail0.B
+    place test-point tp-d0-sleep at=d0.sleep package=pad designator=D0_SLEEP
+    place test-point tp-d0-fault at=d0.fault package=pad designator=D0_FAULT
+
+    circuit mcu.PD2 xor.B_B name="PHASE1"
+    circuit xor.B_Y mux.S1A name="STREAM1"
+    circuit mcu.PC13 mux.IN1 d1.nprog name="nPROG1"
+    place resistor Rterm1 value="22Ω" intent=series
+    circuit mux.D1 Rterm1 d1.signal name="SIGNAL1"
+    connect pwm { from mcu node=PA2; to d1.gate }
+    circuit mcu.PB1 d1.sleep
+    circuit mcu.PA7 d1.fault
+    place rail-output rail1 designator=TRK2
+    circuit d1.a rail1.A
+    circuit d1.b rail1.B
+
+    circuit mcu.PB5 xor.C_B name="PHASE2"
+    circuit xor.C_Y mux.S4A name="STREAM2"
+    circuit mcu.PC14 mux.IN4 d2.nprog name="nPROG2"
+    place resistor Rterm2 value="22Ω" intent=series
+    circuit mux.D4 Rterm2 d2.signal name="SIGNAL2"
+    connect pwm { from mcu node=PB14; to d2.gate }
+    circuit mcu.PB13 d2.sleep
+    circuit mcu.PB12 d2.fault
+    place rail-output rail2 designator=TRK3
+    circuit d2.a rail2.A
+    circuit d2.b rail2.B
+
+    circuit mcu.PD3 xor.D_B name="PHASE3"
+    circuit xor.D_Y mux.S3A name="STREAM3"
+    circuit mcu.PF3 mux.IN3 d3.nprog name="nPROG3"
+    place resistor Rterm3 value="22Ω" intent=series
+    circuit mux.D3 Rterm3 d3.signal name="SIGNAL3"
+    connect pwm { from mcu node=PA11; to d3.gate }
+    circuit mcu.PC6 d3.sleep
+    circuit mcu.PA10 d3.fault
+    place rail-output rail3 designator=TRK4
+    circuit d3.a rail3.A
+    circuit d3.b rail3.B
+
+    // ADC charge reservoirs are on the MCU side of the series resistors.
+    place district-adc adc0 logic=logic.out sense=d0.sense
+    place district-adc adc1 logic=logic.out sense=d1.sense
+    place district-adc adc2 logic=logic.out sense=d2.sense
+    place district-adc adc3 logic=logic.out sense=d3.sense
+    connect analog from=mcu.PA1 to=adc0.adc
+    connect analog from=mcu.PA3 to=adc1.adc
+    connect analog from=mcu.PB11 to=adc2.adc
+    connect analog from=mcu.PA8 to=adc3.adc
+
+    // The lamp stream and fan control take separate GPIOs and rail domains.
+    connect pwm { from mcu node=PB0; to indicator.data }
+    circuit mcu.PB2 thermal.enable name="fan/en"
+
+    place swd-header swd vref=logic.out designator=SWD
+    connect swd { from mcu swdio=PA13 swclk=PA14 nrst=PF2; to swd }
+    circuit swd.swd.nrst name="nrst"
+
+    nc mcu.PA5 mcu.PA12 mcu.PB10 mcu.PB15 mcu.PC7 note="unspent pins"
+    place mounting-hole "mount/nw"
+    place mounting-hole "mount/ne"
+    place mounting-hole "mount/sw"
+    place mounting-hole "mount/se"
+    place fiducial "fid/0"
+    place fiducial "fid/1"
+    place fiducial "fid/2"
+}

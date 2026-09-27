@@ -1,0 +1,103 @@
+use "@stackup/passives"
+use "@stackup/types"
+use "@stackup/mechanical"
+use "@stackup/connector/qwiic"
+use "@stackup/connector/swd"
+use "@stackup/discrete/led/led"
+use "@stackup/power/ldo/ap2112k"
+use "@stackup/micro/stm32c092"
+use "../../shared/lin.kdl"
+use "./cdu.kdl"
+use "./machines.kdl"
+use "./connectors.kdl"
+
+design trk-trn-01 {
+    stock {
+        packages imperial="0402"
+        derating voltages="16V 25V 50V"
+        tracks "0.2mm 0.25mm 0.3mm 0.4mm 0.8mm 1.0mm 2.0mm"
+    }
+
+    place lin-node node
+    place turnout-cdu cdu vpwr=node.vpwr
+    place turnout-machines machines bank=cdu.bank logic=node.v3v3
+    place stm32c092 mcu vdd=node.v3v3 package=lqfp32 designator=STM32
+    place indicator regulator-led rail=node.v3v3 r="680Ω" designator=REG
+
+    // USART1 LIN slave; the node block exposes the transceiver's peer lines.
+    connect uart { from mcu tx=PB6 rx=PB7; to node.link }
+    set node.link.tx net.name "lin/rxd"
+    set node.link.rx net.name "lin/txd"
+
+    // Four control pairs and four independent ADC current mirrors. Channel
+    // numbers follow the terminal banks even though their ADC pads run 2,3,0,1.
+    circuit mcu.PC6 machines.ph0 name="ch0/PH"
+    circuit mcu.PA10 machines.en0 name="ch0/EN"
+    circuit mcu.PA11 machines.ph1 name="ch1/PH"
+    circuit mcu.PA12 machines.en1 name="ch1/EN"
+    circuit mcu.PC14 machines.ph2 name="ch2/PH"
+    circuit mcu.PC15 machines.en2 name="ch2/EN"
+    circuit mcu.PA5 machines.ph3 name="ch3/PH"
+    circuit mcu.PA6 machines.en3 name="ch3/EN"
+    circuit mcu.PA2 machines.sense0 name="ch0/ISENSE"
+    circuit mcu.PA3 machines.sense1 name="ch1/ISENSE"
+    circuit mcu.PA0 machines.sense2 name="ch2/ISENSE"
+    circuit mcu.PA1 machines.sense3 name="ch3/ISENSE"
+    circuit mcu.PB3 machines.sleep name="nSLEEP"
+    circuit mcu.PB4 machines.fault name="nFAULT"
+    circuit mcu.PA8 machines.trip-pwm name="VREF_PWM"
+    circuit mcu.PA4 cdu.sense name="bank/sense"
+
+    // Local common returns keep the throw pulse loop inside the board.
+    place turnout-bank bank0 designator=PT12
+    place turnout-bank bank1 designator=PT34
+    circuit bank0.A0 machines.a0
+    circuit bank0.B0 machines.b0
+    circuit bank0.COM0 cdu.bank.gnd
+    circuit bank0.A1 machines.a1
+    circuit bank0.B1 machines.b1
+    circuit bank0.COM1 cdu.bank.gnd
+    circuit bank1.A0 machines.a2
+    circuit bank1.B0 machines.b2
+    circuit bank1.COM0 cdu.bank.gnd
+    circuit bank1.A1 machines.a3
+    circuit bank1.B1 machines.b3
+    circuit bank1.COM1 cdu.bank.gnd
+
+    // CDU ready and wait are firmware sinks. PA9 shares TIM1 with the trip
+    // reference; PB5 is TIM3. The regulator pilot is independent of firmware.
+    place driven-led ready rail=node.v3v3 sink=mcu.PA9 design-rail-min="3.2V" colour=green designator=RDY
+    place driven-led waiting rail=node.v3v3 sink=mcu.PB5 design-rail-min="3.2V" colour=red designator=WAIT
+
+    // Qwiic rail is switched from cable V5. PB2's low reset state and an
+    // external pull-down keep accessories unpowered until firmware enables it.
+    scope expansion {
+        place ap2112k3v3 ldo in=node.v5 { without always-on }
+        place bulk Cbulk node=ldo.out.rail rail=ldo.out value="10µF" \
+            footprint="Capacitor_SMD:C_1210_3225Metric" note="ceramic hot-plug reservoir"
+        place pull-down en-pd node=ldo.EN rail=node.v5 value="100kΩ"
+        circuit mcu.PB2 ldo.EN name="expansion/en"
+        place qwiic port vcc=ldo.out designator=I2C
+        place i2c-pull-ups pulls rail=ldo.out
+        connect i2c { from mcu sda=PB9 scl=PB8; to port }
+        connect i2c from=port to=pulls
+    }
+
+    place swd-header swd vref=node.v3v3 designator=SWD
+    connect swd { from mcu swdio=PA13 swclk=PA14 nrst=PF2; to swd }
+    circuit node.reset swd.RESET name="nrst"
+
+    place test-point tp-lin at=node.lin package=pad designator=LIN
+    place test-point tp-bank at=cdu.bank.rail package=pad designator=BANK
+    place test-point tp-v3v3 at=node.v3v3.rail package=pad designator="3V3"
+    place test-point tp-gnd at=node.v3v3.gnd package=loop designator=GND
+    place mounting-hole "mount/nw"
+    place mounting-hole "mount/ne"
+    place mounting-hole "mount/sw"
+    place mounting-hole "mount/se"
+    place fiducial "fid/0"
+    place fiducial "fid/1"
+    place fiducial "fid/2"
+
+    nc mcu.PA7 mcu.PA15 mcu.PB0 mcu.PB1 note="unspent LQFP-32 GPIO"
+}
