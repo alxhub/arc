@@ -214,6 +214,10 @@ impl Board {
         self.drivers[index].shorted = shorted;
     }
 
+    pub fn is_shorted(&self, index: usize) -> bool {
+        self.drivers[index].shorted
+    }
+
     pub fn apply(&mut self, index: usize, drive: Drive) {
         self.io.apply(index, drive);
         self.drivers[index].drive = drive;

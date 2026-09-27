@@ -13,9 +13,23 @@ docker compose -f sim/compose.yaml up --build
 ```
 
 Node A builds with `host,rev1` and node B with `host,rev2`. Their logs show
-identities, peer Presence, and district state changes. Node A has a ready source
-and clear loads; node B has a ready source and an injected short on district 0.
-The host-only `--network-id` override supports collision tests.
+identities, peer Presence, and district state changes. Both start with a ready
+source and clear loads. The host-only `--network-id` override supports collision
+tests.
+
+Run the first automated integration scenario:
+
+```sh
+python3 -m sim.scenarios short_recovery
+```
+
+The runner starts an isolated Compose project, waits for both firmware nodes to
+see a peer and reach `running`, injects a short into each revision's district 0,
+checks that power is inhibited without disturbing district 1, clears the short,
+and waits for normal operation to resume after ten clear probes. It reports the
+last observed state and container logs on failure, then tears down its project.
+It uses a test-only TCP control port on each host binary; these commands are
+not ARC CAN messages and are absent from embedded firmware.
 
 To exercise collision detection, start the optional third node with a different
 UID and node A's ID:
