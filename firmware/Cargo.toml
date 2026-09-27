@@ -1,0 +1,29 @@
+[workspace]
+resolver = "3"
+members = ["shared/link", "dst-01"]
+default-members = ["shared/link"]
+
+[workspace.package]
+edition = "2024"
+publish = false
+
+[workspace.dependencies]
+link = { path = "shared/link" }
+embassy-executor = { version = "0.10", features = ["platform-cortex-m", "executor-thread"] }
+embassy-stm32 = { version = "0.6", default-features = false, features = ["rt", "memory-x"] }
+cortex-m = { version = "0.7", features = ["critical-section-single-core"] }
+cortex-m-rt = "0.7"
+panic-halt = "1"
+embassy-time = "0.5"
+embassy-sync = "0.8"
+static_cell = "2"
+portable-atomic = { version = "1", features = ["critical-section"] }
+
+[profile.dev]
+opt-level = 1
+
+[profile.release]
+debug = 2
+lto = true
+opt-level = "s"
+codegen-units = 1

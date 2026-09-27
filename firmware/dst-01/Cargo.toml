@@ -1,0 +1,40 @@
+[package]
+name = "dst-01"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+
+[features]
+# Require an explicit variant and revision; never silently choose a different MCU.
+default = []
+x4 = []
+rev1 = ["embassy-stm32/stm32g0b1re"]
+rev2 = ["embassy-stm32/stm32c092cb"]
+host = ["dep:serde_json"]
+
+[[bin]]
+name = "dst-01"
+path = "src/main.rs"
+test = false
+bench = false
+required-features = ["x4"]
+
+[[bin]]
+name = "dst-01-host"
+path = "src/bin/host.rs"
+required-features = ["x4", "host"]
+
+[dependencies]
+link.workspace = true
+serde_json = { version = "1", optional = true }
+
+[target.'cfg(target_os = "none")'.dependencies]
+embassy-executor.workspace = true
+embassy-stm32 = { workspace = true, features = ["time", "time-driver-tim3"] }
+cortex-m.workspace = true
+cortex-m-rt.workspace = true
+panic-halt.workspace = true
+embassy-time.workspace = true
+embassy-sync.workspace = true
+static_cell.workspace = true
+portable-atomic.workspace = true

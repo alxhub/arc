@@ -1,0 +1,7 @@
+# Keep the host as the default target so shared protocol code can be tested locally.
+[target.thumbv6m-none-eabi]
+rustflags = ["-C", "link-arg=-Tlink.x"]
+
+[alias]
+build-dst-rev1 = "build -p dst-01 --target thumbv6m-none-eabi --no-default-features --features x4,rev1"
+build-dst-rev2 = "build -p dst-01 --target thumbv6m-none-eabi --no-default-features --features x4,rev2"
