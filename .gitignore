@@ -2,6 +2,12 @@
 manifest.local.kdl
 .stackup/cache/
 
+# Generated builds, simulator bytecode, and fabrication exports.
+target/
+__pycache__/
+*.py[cod]
+/boards/
+
 # KiCad editor state and backups.
 *.kicad_prl
 *-backups/
