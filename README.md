@@ -107,8 +107,9 @@ The Kato turntable controller is another example of this intended behavior. As t
 ## Firmware
 
 The [Rust firmware workspace](firmware/README.md) uses Embassy. It contains the
-shared ARC-Link protocol crate at `firmware/shared/link` and the `dst-01` board
-crate, initially targeting the x4 variant with separate rev1 and rev2 features.
+shared ARC-Link protocol crate at `firmware/shared/link`, the `dst-01` board
+crate for x4 rev1/rev2, and the `psu-01` board crate for link power, a
+bounded locomotive table, and DCC idle and speed packets.
 
 ## Layout software
 
@@ -117,6 +118,12 @@ retained MQTT facts about track nodes, derives and checks the layout graph
 against observed CAN node identities, and publishes overall status. Its CAN
 interface has a file-based simulator for
 development and tests.
+
+The initial [dispatchd](services/dispatchd/README.md) bridge reads district
+status and PSU throttle status from the virtual CAN bus, publishes MQTT state
+under `/<layout>/district/` and `/<layout>/loco/`, and converts non-retained
+locomotive commands to CAN throttle-set frames. The PSU locomotive table and
+authority exchange are still to be implemented.
 
 The [virtual CAN lab](sim/README.md) builds the DST-01x4 firmware crate as host
 binaries for both board revisions and connects them over a simulated CAN bus.

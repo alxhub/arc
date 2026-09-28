@@ -1,6 +1,7 @@
 //! Board wiring belongs here, never in the district task or recovery policy.
 
 use embassy_stm32::adc::{Adc, AnyAdcChannel, SampleTime};
+use embassy_stm32::can::{Can, CanConfigurator, config::FrameTransmissionConfig};
 use embassy_stm32::peripherals::ADC1;
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, mutex::Mutex};
 use static_cell::StaticCell;
@@ -16,6 +17,15 @@ pub use rev2::{District, init};
 
 type SharedAdc = Mutex<CriticalSectionRawMutex, Adc<'static, ADC1>>;
 static ADC: StaticCell<SharedAdc> = StaticCell::new();
+
+fn configure_can(mut can: CanConfigurator<'static>) -> Can<'static> {
+    can.set_bitrate(500_000);
+    let config = can
+        .config()
+        .set_frame_transmit(FrameTransmissionConfig::AllowFdCan);
+    can.set_config(config);
+    can.into_normal_mode()
+}
 
 pub struct Sense {
     adc: &'static SharedAdc,

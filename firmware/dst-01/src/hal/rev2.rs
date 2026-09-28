@@ -1,12 +1,20 @@
-use super::{ADC, Sense};
+use super::{ADC, Sense, configure_can};
 use core::convert::Infallible;
 use dst_01::district::{DistrictHal, Drive, Mode, Sample};
 use embassy_stm32::{
     Peripherals,
     adc::{Adc, AdcChannel},
+    bind_interrupts,
+    can::{self, Can, CanConfigurator},
     gpio::{Input, Level, Output, Pull, Speed},
+    peripherals,
 };
 use embassy_sync::mutex::Mutex;
+
+bind_interrupts!(struct CanIrqs {
+    FDCAN1_IT0 => can::IT0InterruptHandler<peripherals::FDCAN1>;
+    FDCAN1_IT1 => can::IT1InterruptHandler<peripherals::FDCAN1>;
+});
 
 pub struct District {
     gate: Output<'static>,
@@ -57,7 +65,7 @@ impl DistrictHal for District {
     }
 }
 
-pub fn init(p: Peripherals) -> [District; 4] {
+pub fn init(p: Peripherals) -> ([District; 4], Can<'static>) {
     // Acquire every gate and nSLEEP low before configuring the ADC.
     let gates = [
         Output::new(p.PA0, Level::Low, Speed::Low),
@@ -106,7 +114,7 @@ pub fn init(p: Peripherals) -> [District; 4] {
         .zip(phases)
         .zip(faults)
         .zip(pins);
-    core::array::from_fn(|_| {
+    let districts = core::array::from_fn(|_| {
         let (((((gate, sleep), nprog), phase), fault), pin) = parts.next().unwrap();
         District {
             gate,
@@ -117,5 +125,7 @@ pub fn init(p: Peripherals) -> [District; 4] {
             sense: Sense { adc, pin },
             applied: None,
         }
-    })
+    });
+    let can = configure_can(CanConfigurator::new(p.FDCAN1, p.PD0, p.PD1, CanIrqs));
+    (districts, can)
 }

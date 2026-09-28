@@ -1,11 +1,14 @@
-use super::{ADC, Sense};
+use super::{ADC, Sense, configure_can};
 use dst_01::district::{DistrictHal, Drive, Mode, Sample};
 use embassy_stm32::{
     Peripherals,
     adc::{Adc, AdcChannel},
+    bind_interrupts,
+    can::{self, Can, CanConfigurator},
     gpio::{Level, Output, Speed},
     i2c::{self, I2c},
     mode::Blocking,
+    peripherals,
     time::Hertz,
 };
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, mutex::Mutex};
@@ -43,6 +46,11 @@ impl Expanders {
 
 type SharedExpanders = Mutex<CriticalSectionRawMutex, Expanders>;
 static EXPANDERS: StaticCell<SharedExpanders> = StaticCell::new();
+
+bind_interrupts!(struct CanIrqs {
+    TIM16_FDCAN_IT0 => can::IT0InterruptHandler<peripherals::FDCAN1>;
+    TIM17_FDCAN_IT1 => can::IT1InterruptHandler<peripherals::FDCAN1>;
+});
 
 pub struct District {
     gate: Output<'static>,
@@ -106,7 +114,7 @@ impl DistrictHal for District {
     }
 }
 
-pub fn init(p: Peripherals) -> [District; 4] {
+pub fn init(p: Peripherals) -> ([District; 4], Can<'static>) {
     let gates = [
         Output::new(p.PA6, Level::Low, Speed::Low),
         Output::new(p.PA7, Level::Low, Speed::Low),
@@ -129,7 +137,7 @@ pub fn init(p: Peripherals) -> [District; 4] {
         p.PA3.degrade_adc(),
     ];
     let mut parts = gates.into_iter().zip(pins);
-    core::array::from_fn(|index| {
+    let districts = core::array::from_fn(|index| {
         let (gate, pin) = parts.next().unwrap();
         District {
             gate,
@@ -138,5 +146,7 @@ pub fn init(p: Peripherals) -> [District; 4] {
             index,
             applied: None,
         }
-    })
+    });
+    let can = configure_can(CanConfigurator::new(p.FDCAN1, p.PB8, p.PB9, CanIrqs));
+    (districts, can)
 }

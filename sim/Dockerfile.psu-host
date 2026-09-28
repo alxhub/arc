@@ -1,0 +1,8 @@
+FROM rust:1.96-bookworm AS build
+WORKDIR /src
+COPY firmware ./firmware
+RUN cd firmware && cargo build --release -p psu-01 --bin psu-01-host --features host
+
+FROM debian:bookworm-slim
+COPY --from=build /src/firmware/target/release/psu-01-host /usr/local/bin/psu-01-host
+ENTRYPOINT ["psu-01-host"]

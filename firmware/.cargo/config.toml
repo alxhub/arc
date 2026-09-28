@@ -5,3 +5,4 @@ rustflags = ["-C", "link-arg=-Tlink.x"]
 [alias]
 build-dst-rev1 = "build -p dst-01 --target thumbv6m-none-eabi --no-default-features --features x4,rev1"
 build-dst-rev2 = "build -p dst-01 --target thumbv6m-none-eabi --no-default-features --features x4,rev2"
+build-psu = "build -p psu-01 --target thumbv6m-none-eabi --release"

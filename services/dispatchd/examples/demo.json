@@ -1,0 +1,10 @@
+{
+  "layout": "demo",
+  "sender_id": "000001",
+  "psu_id": "235ed8",
+  "session": 1,
+  "occupancy_threshold_ma": 50,
+  "locos": {
+    "test": {"address_kind": 0, "address": 3}
+  }
+}

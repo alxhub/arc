@@ -98,6 +98,9 @@ pub struct Status {
     pub drive: Drive,
     pub next_off_ms: u32,
     pub clear_probes: u8,
+    /// A protection trip remains reported through recovery until the district
+    /// reaches continuous drive or is explicitly disabled.
+    pub tripped: bool,
 }
 
 /// Each task owns one controller. It has no CAN, STM32, or revision knowledge.
@@ -108,6 +111,7 @@ pub struct Controller {
     deadline: u64,
     next_off_ms: u32,
     clear_probes: u8,
+    tripped: bool,
 }
 
 impl Default for Controller {
@@ -126,6 +130,7 @@ impl Controller {
             deadline: 0,
             next_off_ms: config.recovery.initial_off_ms,
             clear_probes: 0,
+            tripped: false,
         }
     }
 
@@ -144,6 +149,7 @@ impl Controller {
         self.next_off_ms = self.next_off_ms.max(config.recovery.initial_off_ms);
         if config.mode == Mode::Disabled {
             self.state = State::Disabled;
+            self.tripped = false;
             // Preserve short backoff across mode changes and disable/enable.
         } else if !latched {
             // Configuration changes cannot bypass an existing cooldown.
@@ -187,6 +193,7 @@ impl Controller {
                         self.clear_probes += 1;
                         if self.clear_probes >= self.config.recovery.clear_probes {
                             self.state = State::Running;
+                            self.tripped = false;
                             self.since = now;
                         } else {
                             self.cooldown(now);
@@ -214,6 +221,7 @@ impl Controller {
     }
 
     fn trip(&mut self, now: u64) {
+        self.tripped = true;
         self.clear_probes = 0;
         self.cooldown(now);
         self.next_off_ms = self
@@ -236,6 +244,7 @@ impl Controller {
             drive: self.drive(),
             next_off_ms: self.next_off_ms,
             clear_probes: self.clear_probes,
+            tripped: self.tripped,
         }
     }
 }

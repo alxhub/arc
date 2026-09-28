@@ -1,0 +1,37 @@
+[package]
+name = "psu-01"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+
+[features]
+host = ["dep:serde_json"]
+
+[dependencies]
+link.workspace = true
+serde_json = { version = "1", optional = true }
+
+[target.'cfg(target_os = "none")'.dependencies]
+embassy-executor.workspace = true
+embassy-stm32 = { workspace = true, features = ["time", "time-driver-tim2", "stm32c092cb"] }
+embassy-time.workspace = true
+embassy-sync.workspace = true
+static_cell.workspace = true
+portable-atomic.workspace = true
+critical-section = "1"
+embedded-can = "0.4"
+panic-halt.workspace = true
+cortex-m-rt.workspace = true
+cortex-m.workspace = true
+stm32-metapac = { version = "21", features = ["pac", "stm32c092cb"] }
+
+[[bin]]
+name = "psu-01"
+path = "src/main.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "psu-01-host"
+path = "src/bin/host.rs"
+required-features = ["host"]

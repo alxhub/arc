@@ -257,3 +257,20 @@ fn persistent_short_never_returns_to_continuous_drive() {
     assert!(powered_ms < 60); // <0.1% over one minute after exponential backoff
     assert_eq!(c.status().next_off_ms, 10_000);
 }
+
+#[test]
+fn short_is_reported_until_recovery_or_disable() {
+    let mut c = configured(1);
+    c.tick(40, true, GOOD);
+    c.tick(41, true, SHORT);
+    assert!(c.status().tripped);
+    c.tick(81, true, GOOD);
+    c.tick(82, true, GOOD);
+    c.tick(83, true, GOOD);
+    assert_eq!(c.status().state, State::Running);
+    assert!(!c.status().tripped);
+    c.tick(84, true, SHORT);
+    assert!(c.status().tripped);
+    c.configure(Config::default(), 85).unwrap();
+    assert!(!c.status().tripped);
+}

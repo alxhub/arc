@@ -136,7 +136,12 @@ The PSU node is the DCC synchronization master. It maintains the locomotive
 throttle table and periodically broadcasts DCC packets representing those states
 on the backbone's DCC pair. District nodes use that signal to drive their outputs.
 
-The administrative plane grants the PSU authority to pass DCC traffic for a fixed
+At startup, PSU-01 qualifies its own switched link power and then sends a
+repeating DCC idle packet. This supplies valid timing without commanding
+locomotive motion or waiting for the link nodes to boot. It does not restore
+throttle states from a previous boot.
+
+The administrative plane grants the PSU authority to pass locomotive DCC traffic for a fixed
 lifetime and periodically renews that authority. Each grant includes a last-will
 instruction (LWT) specifying what the PSU must do if renewal stops arriving.
 The PSU measures expiry locally, so either disappearance of the administrative
@@ -164,8 +169,9 @@ protection. The PSU's expiry response is therefore distinct from disabling
 district outputs or losing the DCC source entirely.
 
 The last will covers loss of renewal while the PSU remains able to execute it.
-PSU reset, startup without a grant, and persistence of authority or throttle data
-need explicit lifecycle rules; they are not implied by the continue policy.
+Startup without a grant permits only the idle stream. PSU reset and persistence
+of authority or throttle data need explicit lifecycle rules; they are not
+implied by the continue policy.
 
 ## Pi software services
 
@@ -211,6 +217,15 @@ MQTT carries operational requests and published state between services. Requeste
 throttle state, effective commanded state, and observed physical movement are
 distinct. Controllers display the effective result even when it differs from a
 request because movement authority restricts it.
+
+The first `dispatchd` MQTT contract uses the layout root directly:
+`/<layout>/loco/<id>/command` carries non-retained requests, and
+`/<layout>/loco/<id>/throttle` publishes a retained object with `target`
+(the accepted requested throttle) and `active` (the fresh PSU-reported DCC
+table state, or null). `/<layout>/district/<id>/status` publishes non-retained
+district observations. A district ID is the six-digit lowercase CAN board ID,
+then `-`, then the one-based output number 1–4; CAN uses output indices 0–3.
+Neither an active throttle nor measured current proves physical movement.
 
 `layoutd` is the sole publisher of retained layout facts at
 `/<layout>/layout/node/<id>/fact`. Each fact describes one district or turnout,
@@ -364,12 +379,12 @@ authority reassessment behavior as automatic discovery.
 
 This architecture establishes responsibilities. Further design must define:
 
-- CAN message formats beyond Presence, protocol evolution, and collision recovery
+- CAN message formats beyond Presence and district control/status, protocol evolution, and collision recovery
   (see [PROTOCOL.md](PROTOCOL.md) for the defined wire format).
 - Policy representation and the precedence of operational requests and local recovery.
 - Authority sessions, renewal timing, and rejection of stale commands or renewals.
 - Peer coordination exchanges, timeouts, and behavior when coordination fails.
-- State acknowledgements, event reporting, and periodic status snapshots.
+- State acknowledgements, event reporting, and periodic status snapshots for other nodes.
 - Startup and reset behavior, including policy persistence and PSU throttle initialization.
 - MQTT request/state schemas, issuer sessions, warrant validity, and service health contracts.
 - Layout change transitions, train extent estimation, and operational-picture freshness.

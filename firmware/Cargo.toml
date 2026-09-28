@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["shared/link", "dst-01"]
+members = ["shared/link", "dst-01", "psu-01"]
 default-members = ["shared/link"]
 
 [workspace.package]
