@@ -21,11 +21,24 @@ recovery. The status has a retained offline last will. On a fresh broker, the
 daemon waits briefly for an index before accepting the first command; the wait
 is not used to certify a populated layout as complete.
 
-The `CanNetwork` trait separates CAN observations from the daemon. The initial
-backend reads a simulated node snapshot from JSON; a future SocketCAN backend
-can implement the same interface after the ARC-Link discovery and policy protocol
-is defined. This first version observes board identity but does not issue CAN
-configuration commands or verify applied policy.
+The `CanNetwork` trait supplies observations and targeted DCC grants. Use
+`tcp://host:port` for the virtual CAN bus, or a JSON snapshot for file-based tests.
+The file backend appends grant frames to the sibling `*.commands.jsonl` file;
+it does not invent an acknowledgement. SocketCAN remains unimplemented.
+
+After the layout is `good` and every observed board has reported its DCC
+capability, layoutd selects one master: an already-permitted source first,
+otherwise PSU before DST rev1, then lowest network ID. It publishes the selected
+six-digit ID at `/<prefix>/layout/dcc_master` (initially JSON `null`) and sends
+CAN grants until permission is reported. That retained value is the selection,
+not an acknowledgement. The selected node stays fixed; no handover or failover
+is performed. Firmware permission persists until source restart without renewal.
+If that source restarts, layoutd can re-grant it when the layout is good again.
+
+An expected board without track outputs, such as PSU, uses an `infrastructure`
+node fact with configured empty connections and a binding to board output `0`.
+All expected boards, including PSU, must be represented; unexpected observations
+still prevent `good`. Capability `kind` is 0 (none), 1 (PSU), or 2 (DST rev1).
 
 Run a local MQTT broker, then start the daemon:
 
@@ -45,3 +58,26 @@ The daemon publishes a non-retained result at
 requires reciprocal port records on both nodes before overall status becomes
 `good`. The simulator file represents CAN observations only. The optional third
 and fourth daemon arguments set MQTT host and port.
+
+For host firmware on the CAN lab:
+
+```sh
+ARC_SIM_CLOCK=127.0.0.1:17502 \
+  cargo run --manifest-path services/layoutd/Cargo.toml -- demo tcp://127.0.0.1:17500
+```
+
+With `ARC_SIM_CLOCK`, layoutd participates in the simulator's explicit world
+ticks. CAN presence expiry, source expiry, bootstrap timeout, and master
+selection use logical milliseconds. The simulator waits for layoutd to process
+each tick before advancing. Broker connection deadlines still protect the
+socket; they do not move logical time. Omit this variable when running without
+the world service.
+
+For example, an expected PSU fact is:
+
+```json
+{"kind":"infrastructure","topology":{"status":"configured","connections":[]},"binding":{"node_id":"123456","output":0}}
+```
+
+Its node ID must be included in the retained layout index just like district
+facts. A `good` layout with no transmitter remains without a selected DCC master.

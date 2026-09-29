@@ -1,5 +1,5 @@
 {
   "nodes": [
-    {"id": "fa5138"}
+    {"id": "fa5138", "dcc": {"kind": 2, "permitted": false, "transmitting": false}}
   ]
 }

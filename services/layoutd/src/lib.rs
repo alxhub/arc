@@ -1,3 +1,6 @@
+pub mod can;
+pub mod master;
+
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -38,17 +41,31 @@ pub struct Connection {
 pub enum Kind {
     District,
     Turnout,
+    /// An expected backbone board without a track endpoint (for example PSU).
+    Infrastructure,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct NodeObservation {
     pub id: String,
+    #[serde(default)]
+    pub dcc: Option<DccObservation>,
 }
 
-/// A CAN backend supplies a fresh snapshot of board identities. The first
-/// implementation reads a simulator file.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct DccObservation {
+    pub kind: u8,
+    pub permitted: bool,
+    pub transmitting: bool,
+}
+
+/// A CAN backend supplies board observations and sends targeted transmit grants.
 pub trait CanNetwork {
     fn observe(&mut self) -> Result<Vec<NodeObservation>, String>;
+    fn grant_dcc(&mut self, target: u32) -> Result<(), String> {
+        let _ = target;
+        Err("CAN backend cannot send DCC grants".into())
+    }
 }
 
 /// A successful call means the broker acknowledged the retained QoS 1 message.
@@ -134,8 +151,8 @@ pub fn validate(layout: &Layout) -> Vec<String> {
         if !topic_segment(id) {
             errors.push(format!("{id}: invalid node id"));
         }
-        if node.kind == Kind::District && node.binding.is_none() {
-            errors.push(format!("{id}: district has no physical binding"));
+        if matches!(node.kind, Kind::District | Kind::Infrastructure) && node.binding.is_none() {
+            errors.push(format!("{id}: node has no physical binding"));
         }
         if let Some(binding) = &node.binding
             && !endpoints.insert(binding)
@@ -337,6 +354,7 @@ mod tests {
         let mut publisher = Memory::default();
         let mut can = FakeCan(vec![NodeObservation {
             id: "stm32-1".into(),
+            dcc: None,
         }]);
         let status = publish_layout(&mut publisher, "test", &layout, None, &mut can).unwrap();
         assert_eq!(status.state, Health::Good);

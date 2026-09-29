@@ -7,10 +7,15 @@ use rumqttc::{Client, Event, Incoming, LastWill, MqttOptions, QoS};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
+use std::io::Write;
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::{Duration, Instant};
+
+#[path = "../../../firmware/shared/host_clock.rs"]
+mod host_clock;
+use host_clock::HostClock;
 
 #[derive(Deserialize)]
 struct SimulatedCanState {
@@ -27,6 +32,47 @@ impl CanNetwork for SimulatedCan {
         let state: SimulatedCanState =
             serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
         Ok(state.nodes)
+    }
+    fn grant_dcc(&mut self, target: u32) -> Result<(), String> {
+        let mut out = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(self.path.with_extension("commands.jsonl"))
+            .map_err(|e| e.to_string())?;
+        writeln!(out, "{}", layoutd::can::grant_frame(target)?).map_err(|e| e.to_string())
+    }
+}
+
+enum CanBackend {
+    File(SimulatedCan),
+    Tcp(layoutd::can::TcpCan),
+}
+impl CanNetwork for CanBackend {
+    fn observe(&mut self) -> Result<Vec<NodeObservation>, String> {
+        match self {
+            Self::File(can) => can.observe(),
+            Self::Tcp(can) => can.observe(),
+        }
+    }
+    fn grant_dcc(&mut self, target: u32) -> Result<(), String> {
+        match self {
+            Self::File(can) => can.grant_dcc(target),
+            Self::Tcp(can) => can.grant_dcc(target),
+        }
+    }
+}
+
+impl CanBackend {
+    fn set_time(&mut self, now_ms: u64) {
+        if let Self::Tcp(can) = self {
+            can.set_time(now_ms);
+        }
+    }
+
+    fn wait_marker(&self, now_ms: u64) {
+        if let Self::Tcp(can) = self {
+            can.wait_marker(now_ms);
+        }
     }
 }
 
@@ -271,7 +317,10 @@ fn handle_command(
 fn run() -> Result<(), String> {
     let args: Vec<_> = std::env::args().collect();
     if !(3..=5).contains(&args.len()) {
-        return Err("usage: layoutd <layout-prefix> <sim-can.json> [mqtt-host] [mqtt-port]".into());
+        return Err(
+            "usage: layoutd <layout-prefix> <sim-can.json|tcp://host:port> [mqtt-host] [mqtt-port]"
+                .into(),
+        );
     }
     let prefix = &args[1];
     if !topic_segment(prefix) {
@@ -284,8 +333,14 @@ fn run() -> Result<(), String> {
         .transpose()
         .map_err(|error| error.to_string())?
         .unwrap_or(1883);
-    let mut can = SimulatedCan {
-        path: PathBuf::from(&args[2]),
+    let clock_address = std::env::var("ARC_SIM_CLOCK").ok().filter(|value| !value.is_empty());
+    let mut clock = clock_address.as_deref().map(|address| HostClock::connect(address, "layoutd")).transpose()?;
+    let mut can = if let Some(address) = args[2].strip_prefix("tcp://") {
+        CanBackend::Tcp(layoutd::can::TcpCan::connect(address, clock.is_some())?)
+    } else {
+        CanBackend::File(SimulatedCan {
+            path: PathBuf::from(&args[2]),
+        })
     };
     let mut mqtt = Mqtt::connect(host, port, prefix)?;
     let mut published = LayoutStatus {
@@ -293,15 +348,23 @@ fn run() -> Result<(), String> {
         reasons: vec![],
     };
     publish_status(&mut mqtt, prefix, &published)?;
+    let mut master = layoutd::master::Master::default();
+    let mut published_master = None;
+    mqtt.publish(&format!("/{prefix}/layout/dcc_master"), b"null", true)?;
+    let started = Instant::now();
     let mut retained = RetainedFacts::default();
     let mut current: Option<Layout> = None;
     let mut bootstrap_complete = false;
-    let bootstrap_deadline = Instant::now() + Duration::from_secs(2);
+    let bootstrap_deadline_ms = 2_000u64;
     eprintln!("layoutd: serving {prefix}");
 
     loop {
         mqtt.check_connection()?;
-        let message = mqtt.messages.recv_timeout(Duration::from_millis(200)).ok();
+        let message = if clock.is_some() {
+            mqtt.messages.try_recv().ok()
+        } else {
+            mqtt.messages.recv_timeout(Duration::from_millis(200)).ok()
+        };
         if let Some(message) = &message {
             retained.ingest(prefix, message)?;
             if current.is_none()
@@ -344,7 +407,15 @@ fn run() -> Result<(), String> {
                 }
             }
         }
-        if !bootstrap_complete && Instant::now() >= bootstrap_deadline {
+        let elapsed = if let Some(clock) = &mut clock {
+            let Some(now) = clock.wait()? else { continue };
+            can.wait_marker(now);
+            can.set_time(now);
+            now
+        } else {
+            started.elapsed().as_millis() as u64
+        };
+        if !bootstrap_complete && elapsed >= bootstrap_deadline_ms {
             bootstrap_complete = true;
             published = LayoutStatus {
                 state: Health::Invalid,
@@ -365,10 +436,28 @@ fn run() -> Result<(), String> {
                     .map(Vec::as_slice)
                     .map_err(String::as_str),
             );
+            if let Ok(nodes) = &observation {
+                master.update(
+                    &status,
+                    nodes,
+                    elapsed,
+                    &mut can,
+                )?;
+                if master.selected() != published_master {
+                    let payload =
+                        serde_json::to_vec(&master.selected().map(|id| format!("{id:06x}")))
+                            .map_err(|e| e.to_string())?;
+                    mqtt.publish(&format!("/{prefix}/layout/dcc_master"), &payload, true)?;
+                    published_master = master.selected();
+                }
+            }
             if status != published {
                 publish_status(&mut mqtt, prefix, &status)?;
                 published = status;
             }
+        }
+        if let Some(clock) = &mut clock {
+            clock.ack()?;
         }
     }
 }

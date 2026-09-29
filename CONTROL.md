@@ -30,9 +30,8 @@ within which they operate. It configures behavior when authority or communicatio
 is lost. Nodes execute that policy without requiring the Pi to referee every
 incident.
 
-Authority may have a fixed lifetime and require periodic renewal. Its expiry
-behavior is part of the policy granted in advance, rather than a decision that
-must be obtained from an unavailable computer.
+DCC transmit permission lasts until the source restarts. Operational movement
+authority is separate and can have its own lifetime.
 
 ### Operations plane
 
@@ -52,7 +51,7 @@ reactive recovery remain responsible for the electrical response.
 Movement-conflict protection and electrical protection are distinct. Local short
 protection does not replace an operations service that prevents conflicting
 movements. The response to loss of operational control is administrative policy;
-the PSU authority mechanism below provides the DCC fallback.
+DCC source permission remains granted until source restart.
 
 ### Control plane
 
@@ -130,48 +129,31 @@ communication, loss of CAN communication, loss of backbone power, and loss of a
 valid DCC signal are different conditions, not a single undifferentiated offline
 state.
 
-## PSU authority and loss of operational control
+## DCC master and transmit permission
 
-The PSU node is the DCC synchronization master. It maintains the locomotive
-throttle table and periodically broadcasts DCC packets representing those states
-on the backbone's DCC pair. District nodes use that signal to drive their outputs.
+PSU-01 and DST-01 rev1 can be the DCC synchronization master. They share a
+locomotive throttle table and packet generator implementation. Each source boots
+with an empty table and its DCC line driver disabled. PSU link power and CAN
+start independently so all expected boards can be discovered first.
 
-At startup, PSU-01 qualifies its own switched link power and then sends a
-repeating DCC idle packet. This supplies valid timing without commanding
-locomotive motion or waiting for the link nodes to boot. It does not restore
-throttle states from a previous boot.
+Once layoutd sees a valid layout with every expected hardware node accounted for,
+it selects one capable source and sends a targeted CAN transmit grant. It prefers
+PSU, then DST rev1, breaking ties by network ID. It reuses an already-granted
+source when layoutd itself restarts. The chosen source publishes its capability,
+permission, and actual transmit state. Layoutd retains the selected node at
+`/<layout>/layout/dcc_master` and retries the same grant until status confirms it.
 
-The administrative plane grants the PSU authority to pass locomotive DCC traffic for a fixed
-lifetime and periodically renews that authority. Each grant includes a last-will
-instruction (LWT) specifying what the PSU must do if renewal stops arriving.
-The PSU measures expiry locally, so either disappearance of the administrative
-plane or failure of the CAN control plane can trigger the fallback without any
-further communication.
+Permission is latched until the source restarts. It has no lease, renewal,
+revocation, handover, or automatic failover. Losing layoutd or CAN does not remove
+permission or change the held throttle table. Local power qualification can
+inhibit the physical output while permission remains granted. On source restart,
+permission and the throttle table are cleared; layoutd may grant the same source
+again after the layout is good.
 
-The agreed last-will choices are:
-
-| Last will | Behavior after authority expires |
-| --- | --- |
-| Continue current states | Keep generating DCC from the throttle states held at expiry. Fresh throttle changes require valid authority. |
-| Track-wide emergency stop | Generate track-wide emergency-stop traffic until authority is re-established; leave the effective throttle state stopped. |
-
-Expiry is a transition into the fallback authorized by the last will. In
-particular, the continue policy permits continued transmission after the normal
-grant expires. Neither fallback requires the Pi or CAN to remain available.
-
-Renewing authority after an emergency stop permits fresh operational commands.
-It must not automatically restore old throttle speeds or resume locomotives from
-stale table entries. Re-establishing authority alone does not command movement.
-
-An emergency-stop DCC stream remains a valid source signal. Districts can keep
-their rails energized to deliver it, subject to their own policies and electrical
-protection. The PSU's expiry response is therefore distinct from disabling
-district outputs or losing the DCC source entirely.
-
-The last will covers loss of renewal while the PSU remains able to execute it.
-Startup without a grant permits only the idle stream. PSU reset and persistence
-of authority or throttle data need explicit lifecycle rules; they are not
-implied by the continue policy.
+District mode and source readiness remain independent: granting DCC transmission
+does not energize any district. Throttle-table commands do not grant transmission.
+Movement-authority and stop policies belong to the operations plane; this grant
+only chooses which node may drive the backbone DCC pair.
 
 ## Pi software services
 
@@ -181,7 +163,7 @@ ownership boundaries even when all services run on one Pi.
 
 | Service | Owns | Interfaces |
 | --- | --- | --- |
-| `layoutd` | Layout topology, district-to-track mappings, administrative policy, and node authority grants and renewal. | CAN; layout configuration and publication to other services. |
+| `layoutd` | Layout topology, district-to-track mappings, administrative policy, and DCC master selection and boot-lifetime transmit grants. | CAN; layout configuration and publication to other services. |
 | `dispatchd` | The authoritative operational picture, locomotive control ownership, and translation of permitted requests into track directives. | CAN and MQTT. |
 | `routingd` | Journey planning, reservations, passing maneuvers, and traffic flow. | Software service interfaces; movement requests flow through `dispatchd`. |
 | `ptcd` | Movement protection and issuance of track warrants. | Consumes the operational picture and publishes warrants over MQTT. |
@@ -310,13 +292,11 @@ recovery requires an explicit fresh request or re-arm.
 | --- | --- |
 | `ptcd` disappears or warrants expire | `dispatchd` invalidates the affected authority and commands the configured stop response. |
 | MQTT communication is lost | `dispatchd` applies the configured communication-loss response; local warrant expiry bounds continued permission. |
-| `dispatchd` fails | `layoutd` stops renewing PSU authority when policy requires dispatch health. |
-| Pi or CAN disappears | PSU authority expires and its configured last will takes effect. |
+| `dispatchd` fails | DCC permission remains granted; operational stop policy is separate. |
+| Pi or CAN disappears | The selected source keeps its permission and held throttle table until restart. |
 
-`layoutd` must not equate its own process health with operational health.
-Administrative policy determines which services must remain healthy for PSU
-authority renewal. This preserves the choice between continued operation and
-emergency stop established by the PSU last will.
+`layoutd` readiness controls the initial source assignment. It does not renew
+transmit permission or revoke it when operational health changes.
 
 ## Operational picture and reconciliation
 
