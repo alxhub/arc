@@ -11,6 +11,7 @@ from typing import Callable
 
 ROOT = Path(__file__).resolve().parents[1]
 COMPOSE = ROOT / "sim" / "compose.yaml"
+DRIVE_WORLD: "Node | None" = None
 
 
 def free_port() -> int:
@@ -26,7 +27,7 @@ class Node:
 
     def request(self, command: dict) -> dict:
         with socket.create_connection(("127.0.0.1", self.port), timeout=1) as connection:
-            connection.settimeout(2)
+            connection.settimeout(max(2, command.get("milliseconds", 0) / 1000 * 100))
             connection.sendall((json.dumps(command) + "\n").encode())
             with connection.makefile("r") as reader:
                 line = reader.readline()
@@ -39,6 +40,9 @@ class Node:
 
     def status(self) -> dict:
         return self.request({"op": "status"})
+
+    def advance(self, milliseconds: int) -> dict:
+        return self.request({"op": "advance", "milliseconds": milliseconds})
 
     def short(self, district: int, value: bool) -> None:
         self.request({"op": "set_short", "district": district, "value": value})
@@ -85,8 +89,23 @@ def configure(bus_port: int, target: str, district: int, mode: int) -> None:
     """Send the actual ARC CAN FD district configuration frame."""
     payload = bytes((1, 1)) + bytes.fromhex(target) + bytes((district, mode))
     frame = {"id": 0x10000001, "data": payload.hex()}
+    send_frame(bus_port, frame)
+
+
+def send_frame(bus_port: int, frame: dict) -> None:
     with socket.create_connection(("127.0.0.1", bus_port), timeout=1) as connection:
-        connection.sendall((json.dumps(frame) + "\n").encode())
+        connection.settimeout(2)
+        connection.sendall((json.dumps(frame) + "\n" + '{"kind":"barrier"}\n').encode())
+        with connection.makefile("r") as reader:
+            answer = json.loads(reader.readline())
+        if answer != {"kind": "barrier", "ok": True}:
+            raise RuntimeError(f"CAN barrier failed: {answer}")
+    if DRIVE_WORLD is not None:
+        DRIVE_WORLD.advance(10)
+
+
+def grant_dcc(bus_port: int, target: str) -> None:
+    send_frame(bus_port, {"id": 0x14000001, "data": "0101" + target})
 
 
 def throttle(bus_port: int, target: str, address: int, sequence: int,
@@ -94,8 +113,7 @@ def throttle(bus_port: int, target: str, address: int, sequence: int,
     payload = (bytes((1, 1)) + bytes.fromhex(target) + (1).to_bytes(4, "big")
                + sequence.to_bytes(4, "big") + bytes((0,))
                + address.to_bytes(2, "big") + bytes((direction, speed, stop_mode, 0)))
-    with socket.create_connection(("127.0.0.1", bus_port), timeout=1) as connection:
-        connection.sendall((json.dumps({"id": 0x08000001, "data": payload.hex()}) + "\n").encode())
+    send_frame(bus_port, {"id": 0x08000001, "data": payload.hex()})
 
 
 def packet_bytes(signal: dict) -> bytes:
@@ -110,6 +128,7 @@ class BusObserver:
         self.connection = socket.create_connection(("127.0.0.1", port), timeout=1)
         self.connection.settimeout(0.5)
         self.pending = b""
+        self.district_reports: list[tuple[str, int, dict]] = []
 
     def close(self) -> None:
         self.connection.close()
@@ -128,7 +147,7 @@ class BusObserver:
                 continue
             line, self.pending = self.pending.split(b"\n", 1)
             frame = json.loads(line)
-            if frame["id"] != 0x13000000 | int(network_id, 16):
+            if frame.get("id") != 0x13000000 | int(network_id, 16):
                 continue
             data = bytes.fromhex(frame["data"])
             if len(data) != 20 or data[:2] != b"\x01\x01" or int.from_bytes(data[11:13], "big") != address:
@@ -157,7 +176,7 @@ class BusObserver:
                 continue
             line, self.pending = self.pending.split(b"\n", 1)
             frame = json.loads(line)
-            if frame["id"] != 0x12000000 | int(network_id, 16):
+            if frame.get("id") != 0x12000000 | int(network_id, 16):
                 continue
             data = bytes.fromhex(frame["data"])
             if len(data) != 12 or data[:2] != b"\x01\x01":
@@ -176,6 +195,9 @@ class BusObserver:
 
     def status(self, network_id: str, district: int, condition: Callable[[dict], bool],
                timeout: float = 4) -> dict:
+        for board, output, report in self.district_reports:
+            if board == network_id and output == district and condition(report):
+                return report
         deadline = time.monotonic() + timeout
         last = None
         while time.monotonic() < deadline:
@@ -188,10 +210,11 @@ class BusObserver:
                 continue
             line, self.pending = self.pending.split(b"\n", 1)
             frame = json.loads(line)
-            if frame["id"] != 0x11000000 | int(network_id, 16):
+            can_id = frame.get("id")
+            if not isinstance(can_id, int) or can_id & 0xff000000 != 0x11000000:
                 continue
             data = bytes.fromhex(frame["data"])
-            if len(data) != 16 or data[:2] != b"\x01\x01" or data[2] != district:
+            if len(data) != 16 or data[:2] != b"\x01\x01":
                 continue
             status = {
                 "mode": data[3], "state": data[4],
@@ -200,8 +223,9 @@ class BusObserver:
                 "peak_ma": int.from_bytes(data[8:10], "big"),
                 "window_ms": int.from_bytes(data[10:14], "big"),
             }
+            self.district_reports.append((f"{can_id & 0xffffff:06x}", data[2], status))
             last = status
-            if condition(status):
+            if can_id == 0x11000000 | int(network_id, 16) and data[2] == district and condition(status):
                 return status
         raise AssertionError(f"timed out waiting for CAN status of {network_id}/{district}; last={last}")
 
@@ -213,11 +237,25 @@ def wait_for(label: str, observe: Callable[[], dict], condition: Callable[[dict]
         try:
             last = observe()
             if condition(last):
+                if DRIVE_WORLD is not None:
+                    DRIVE_WORLD.advance(5)
                 return last
         except (OSError, RuntimeError, json.JSONDecodeError) as error:
             last = str(error)
-        time.sleep(0.02)
+        if DRIVE_WORLD is not None:
+            DRIVE_WORLD.advance(10)
+        else:
+            time.sleep(0.02)
     raise AssertionError(f"timed out waiting for {label}; last observation: {last}")
+
+
+def advance_until(world: Node, label: str, condition: Callable[[dict], bool], limit_ms: int) -> dict:
+    for _ in range(limit_ms):
+        world.advance(1)
+        status = world.status()
+        if condition(status):
+            return status
+    raise AssertionError(f"{label} did not occur within {limit_ms} world ticks; last={status}")
 
 
 def short_recovery(nodes: list[Node], bus_port: int, observer: BusObserver) -> None:
@@ -280,7 +318,10 @@ def district_config(nodes: list[Node], bus_port: int, observer: BusObserver) -> 
         assert disabled["peak_ma"] == 0 and disabled["current_valid"], disabled
         configure(bus_port, "ffffff", 2, 1)
         configure(bus_port, target, 2, 3)  # Invalid commanded state.
-        time.sleep(0.1)
+        if DRIVE_WORLD is not None:
+            DRIVE_WORLD.advance(5)
+        else:
+            time.sleep(0.1)
         assert initial["districts"] == node.status()["districts"], node.status()
         node.source_ready(False)
         configure(bus_port, target, 2, 1)
@@ -356,11 +397,15 @@ def psu_throttle(psu: Node, bus_port: int, signals: SignalObserver,
     throttle(bus_port, target, 3, 1, 20)
     applied = observer.throttle_status(target, 3, lambda s: s["sequence"] == 1)
     assert applied["speed"] == 20 and applied["state"] == 1, applied
+    if DRIVE_WORLD is not None:
+        DRIVE_WORLD.advance(10)
     first = signals.next("dcc_packet", lambda s: len(s["bits"]) == 51
                          and packet_bytes(s)[0] == 3)
     assert packet_bytes(first) == bytes((3, 0x3f, 0x95, 0xa9)), first
     throttle(bus_port, target, 4, 1, 10)
     observer.throttle_status(target, 4, lambda s: s["speed"] == 10)
+    if DRIVE_WORLD is not None:
+        DRIVE_WORLD.advance(10)
     second = signals.next("dcc_packet", lambda s: len(s["bits"]) == 51
                           and packet_bytes(s)[0] == 4)
     assert packet_bytes(second) == bytes((4, 0x3f, 0x8b, 0xb0)), second
@@ -371,18 +416,80 @@ def psu_throttle(psu: Node, bus_port: int, signals: SignalObserver,
     throttle(bus_port, target, 3, 2, 0)
     stopped = observer.throttle_status(target, 3, lambda s: s["sequence"] == 2)
     assert stopped["speed"] == 0, stopped
+    if DRIVE_WORLD is not None:
+        DRIVE_WORLD.advance(10)
     signals.next("dcc_packet", lambda s: len(s["bits"]) == 51
                  and packet_bytes(s) == bytes((3, 0x3f, 0x80, 0xbc)))
     fresh = BusObserver(bus_port)
     try:
+        if DRIVE_WORLD is not None:
+            DRIVE_WORLD.advance(1_005)
         periodic = fresh.throttle_status(target, 3, lambda s: s["sequence"] == 2, timeout=2)
         assert periodic["speed"] == 0, periodic
     finally:
         fresh.close()
 
 
+def moving_loco(psu: Node, node: Node, world: Node, bus_port: int,
+                observer: BusObserver) -> None:
+    board_id = node.status()["network_id"]
+    assert board_id == "fa5138", board_id
+    initial = world.status()["locos"]["test"]
+    assert initial["piece"] == "west" and initial["offset_mm"] == 30, initial
+    for output in (0, 1):
+        configure(bus_port, board_id, output, 1)
+    world.advance(500)
+    wait_for("both physical district feeds running", node.status,
+             lambda s: all(s["districts"][i]["state"] == "running" for i in (0, 1)), 12)
+    world.advance(5)
+    occupied = observer.status(board_id, 0,
+                               lambda s: s["state"] == 4 and s["peak_ma"] >= 80, timeout=3)
+    assert occupied["current_valid"], occupied
+    clear = observer.status(board_id, 1,
+                            lambda s: s["state"] == 4 and s["average_ma"] == 0, timeout=3)
+    assert clear["current_valid"], clear
+    throttle(bus_port, psu.status()["network_id"], 3, 1, 126)
+    commanded = advance_until(world, "loco receives a DCC speed packet",
+                              lambda s: s["locos"]["test"]["speed"] == 126, 20)
+    before_motion = commanded["time_ms"]
+    assert commanded["time_ms"] == before_motion and 30 <= commanded["locos"]["test"]["offset_mm"] <= 30.5, commanded
+    assert world.advance(3_000)["time_ms"] == before_motion + 3_000
+    wait_for("DCC-powered loco enters east district", world.status,
+             lambda s: s["locos"]["test"]["piece"] == "east"
+             and s["locos"]["test"]["offset_mm"] > 15, 7)
+    moved = observer.status(board_id, 1,
+                            lambda s: s["state"] == 4 and s["average_ma"] >= 50, timeout=3)
+    assert moved["current_valid"], moved
+    world.advance(1_000)
+    cleared = observer.status(board_id, 0,
+                              lambda s: s["state"] == 4 and s["average_ma"] == 0, timeout=3)
+    assert cleared["current_valid"], cleared
+    throttle(bus_port, psu.status()["network_id"], 3, 2, 0)
+
+
+def phase_bridge(psu: Node, node: Node, world: Node, bus_port: int) -> None:
+    board_id = node.status()["network_id"]
+    assert world.status()["locos"]["test"]["offset_mm"] == 180
+    for output in (0, 1):
+        configure(bus_port, board_id, output, 1)
+    world.advance(500)
+    wait_for("both feeds running", node.status,
+             lambda s: all(s["districts"][i]["state"] == "running" for i in (0, 1)), 12)
+    throttle(bus_port, psu.status()["network_id"], 3, 1, 126)
+    commanded = advance_until(world, "loco receives a DCC speed packet",
+                              lambda s: s["locos"]["test"]["speed"] == 126, 20)
+    before_motion = commanded["time_ms"]
+    assert commanded["time_ms"] == before_motion and 180 <= commanded["locos"]["test"]["offset_mm"] <= 180.5, commanded
+    assert world.advance(150)["time_ms"] == before_motion + 150
+    tripped = wait_for("bridged phase mismatch to trip both outputs", node.status,
+                       lambda s: all(s["districts"][i]["trips"] > 0 for i in (0, 1)), 6)
+    assert all(tripped["districts"][i]["protection_trip"] for i in (0, 1)), tripped
+    throttle(bus_port, psu.status()["network_id"], 3, 2, 0)
+
+
 def run_scenario(name: str) -> None:
-    ports = [free_port() for _ in range(5)]
+    global DRIVE_WORLD
+    ports = [free_port() for _ in range(6)]
     env = os.environ.copy()
     env.update(
         ARC_SIM_BUS_PORT=str(ports[0]),
@@ -390,17 +497,33 @@ def run_scenario(name: str) -> None:
         ARC_SIM_NODE_B_PORT=str(ports[2]),
         ARC_SIM_SIGNALS_PORT=str(ports[3]),
         ARC_SIM_PSU_PORT=str(ports[4]),
+        ARC_SIM_WORLD_PORT=str(ports[5]),
+        ARC_SIM_WORLD="world:17502" if name in ("moving_loco", "phase_bridge") else "",
+        ARC_SIM_CAN_CLOCK="world:17502",
+        ARC_SIM_CLOCK="world:17502",
+        ARC_SIM_FIXTURE=("sim/world/fixtures/swapped_boundary.json" if name == "phase_bridge"
+                         else "sim/world/fixtures/two_districts.json"),
     )
     project = f"arc-scenario-{os.getpid()}"
     base = ["docker", "compose", "-p", project, "-f", str(COMPOSE)]
-    started = False
     try:
         subprocess.run(base + ["up", "-d", "--build", "--wait"], cwd=ROOT, env=env, check=True, timeout=180)
-        started = True
         nodes = [Node("rev1", ports[1]), Node("rev2", ports[2])]
         psu = Node("psu", ports[4])
+        world = Node("world", ports[5])
+        wait_for("all simulator participants registered with world clock", world.status,
+                 lambda s: set(s["clock_participants"]) == {"can", "psu", "node_a", "node_b"}, 12)
+        world.advance(21)
+        DRIVE_WORLD = world if name not in ("moving_loco", "phase_bridge") else None
+        online = wait_for("PSU online without DCC permission", psu.status, lambda s: s["state"] == "online", 12)
+        assert not online["dcc_permitted"] and not online["dcc_enabled"], online
+        grant_dcc(ports[0], online["network_id"])
+        world.advance(5)
+        wait_for("PSU granted DCC", psu.status, lambda s: s["dcc_enabled"], 3)
         observer = BusObserver(ports[0])
         signals = SignalObserver(ports[3])
+        if DRIVE_WORLD is not None:
+            world.advance(1_005)
         try:
             if name == "short_recovery":
                 short_recovery(nodes, ports[0], observer)
@@ -410,6 +533,10 @@ def run_scenario(name: str) -> None:
                 psu_startup(psu, nodes, ports[0], signals, observer)
             elif name == "psu_throttle":
                 psu_throttle(psu, ports[0], signals, observer)
+            elif name == "moving_loco":
+                moving_loco(psu, nodes[0], world, ports[0], observer)
+            elif name == "phase_bridge":
+                phase_bridge(psu, nodes[0], world, ports[0])
             else:
                 raise ValueError(f"unknown scenario: {name}")
         finally:
@@ -417,16 +544,16 @@ def run_scenario(name: str) -> None:
             signals.close()
         print(f"PASS {name}", flush=True)
     except Exception:
-        if started:
-            subprocess.run(base + ["logs", "--no-color", "--tail=80"], cwd=ROOT, env=env, check=False)
+        subprocess.run(base + ["logs", "--no-color", "--tail=80"], cwd=ROOT, env=env, check=False)
         raise
     finally:
+        DRIVE_WORLD = None
         subprocess.run(base + ["down", "--remove-orphans"], cwd=ROOT, env=env, check=False, stdout=subprocess.DEVNULL)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run an ARC firmware integration scenario")
-    parser.add_argument("scenario", choices=["short_recovery", "district_config", "psu_startup", "psu_throttle"])
+    parser.add_argument("scenario", choices=["short_recovery", "district_config", "psu_startup", "psu_throttle", "moving_loco", "phase_bridge"])
     args = parser.parse_args()
     run_scenario(args.scenario)
 

@@ -6,6 +6,7 @@ validate the DCC stream without using wall-clock scheduling for every edge.
 """
 
 import argparse
+from contextlib import suppress
 import asyncio
 import json
 import logging
@@ -31,6 +32,9 @@ def validate(line: bytes) -> dict:
             raise ValueError("DCC packet requires 42, 51, or 60 bits")
         if not isinstance(halves, list) or len(halves) != len(bits) or any(type(x) is not int or x <= 0 for x in halves):
             raise ValueError("DCC packet requires one positive half-bit duration per bit")
+    elif value.get("kind") == "barrier":
+        if type(value.get("time_ms")) is not int or value["time_ms"] < 0:
+            raise ValueError("barrier requires nonnegative time_ms")
     else:
         raise ValueError("unknown signal kind")
     return value
@@ -49,10 +53,12 @@ class LinkBus:
     async def close(self) -> None:
         if self.server is not None:
             self.server.close()
-            await self.server.wait_closed()
         for writer in tuple(self.clients):
             writer.close()
-            await writer.wait_closed()
+            with suppress(ConnectionError):
+                await writer.wait_closed()
+        if self.server is not None:
+            await self.server.wait_closed()
 
     async def _client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         self.clients.add(writer)
@@ -77,10 +83,16 @@ class LinkBus:
                     except (ConnectionError, asyncio.TimeoutError):
                         self.clients.discard(peer)
                         peer.close()
+                if signal["kind"] == "barrier":
+                    writer.write((json.dumps({"kind": "barrier_ack", "time_ms": signal["time_ms"]}) + "\n").encode())
+                    await writer.drain()
+        except ConnectionError:
+            pass
         finally:
             self.clients.discard(writer)
             writer.close()
-            await writer.wait_closed()
+            with suppress(ConnectionError):
+                await writer.wait_closed()
 
 
 async def run(host: str, port: int) -> None:

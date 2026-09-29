@@ -36,6 +36,13 @@ class LinkBusTests(unittest.IsolatedAsyncioTestCase):
             await a_writer.drain()
             for reader in (a_reader, b_reader):
                 self.assertEqual(json.loads(await asyncio.wait_for(reader.readline(), 1)), packet)
+            barrier = {"kind": "barrier", "time_ms": 7}
+            a_writer.write((json.dumps(barrier) + "\n").encode())
+            await a_writer.drain()
+            for reader in (a_reader, b_reader):
+                self.assertEqual(json.loads(await asyncio.wait_for(reader.readline(), 1)), barrier)
+            self.assertEqual(json.loads(await asyncio.wait_for(a_reader.readline(), 1)),
+                             {"kind": "barrier_ack", "time_ms": 7})
             a_writer.close()
             b_writer.close()
             await asyncio.gather(a_writer.wait_closed(), b_writer.wait_closed())

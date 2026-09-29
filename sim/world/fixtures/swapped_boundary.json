@@ -1,0 +1,13 @@
+{
+  "pieces": {
+    "west": {"feed": {"board": "fa5138", "output": 0}, "paths": {"main": {"from": "west", "to": "east", "length_mm": 200}}},
+    "east": {"feed": {"board": "fa5138", "output": 1}, "paths": {"main": {"from": "west", "to": "east", "length_mm": 200}}}
+  },
+  "connections": [
+    {"a": {"piece": "west", "port": "east"}, "b": {"piece": "east", "port": "west"}, "rails": "swapped"}
+  ],
+  "locos": {
+    "test": {"address_kind": 0, "address": 3, "piece": "west", "path": "main", "offset_mm": 180,
+             "facing": 1, "pickup_mm": 20, "idle_ma": 80, "running_ma": 250, "max_mm_s": 100}
+  }
+}

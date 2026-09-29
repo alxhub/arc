@@ -4,9 +4,12 @@ services:
     working_dir: /app
     volumes:
       - ./:/app/sim:ro
-    command: ["python", "-m", "sim.canlab.bus", "--host", "0.0.0.0"]
+    command: ["python", "-m", "sim.canlab.bus", "--host", "0.0.0.0", "--clock", "${ARC_SIM_CAN_CLOCK:-world:17502}"]
     ports:
       - "127.0.0.1:${ARC_SIM_BUS_PORT:-17500}:17500"
+    depends_on:
+      world:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1', 17500), 1).close()"]
       interval: 2s
@@ -27,11 +30,28 @@ services:
       timeout: 2s
       retries: 10
 
+  world:
+    image: python:3.12-alpine
+    working_dir: /app
+    volumes:
+      - ./:/app/sim:ro
+    command: ["python", "-m", "sim.world.service", "--fixture", "${ARC_SIM_FIXTURE:-sim/world/fixtures/two_districts.json}", "--signals", "signals:17501", "--listen", "0.0.0.0:17502"]
+    ports:
+      - "127.0.0.1:${ARC_SIM_WORLD_PORT:-17502}:17502"
+    depends_on:
+      signals:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1', 17502), 1).close()"]
+      interval: 2s
+      timeout: 2s
+      retries: 10
+
   psu:
     build:
       context: ..
       dockerfile: sim/Dockerfile.psu-host
-    command: ["--bus", "bus:17500", "--signals", "signals:17501", "--control", "0.0.0.0:17600", "--name", "psu", "--uid", "303132333435363738393a3b"]
+    command: ["--bus", "bus:17500", "--signals", "signals:17501", "--clock", "${ARC_SIM_CLOCK:-world:17502}", "--control", "0.0.0.0:17600", "--name", "psu", "--uid", "303132333435363738393a3b"]
     ports:
       - "127.0.0.1:${ARC_SIM_PSU_PORT:-17610}:17600"
     depends_on:
@@ -46,7 +66,7 @@ services:
       dockerfile: sim/Dockerfile.dst-host
       args:
         REV: rev1
-    command: ["--bus", "bus:17500", "--signals", "signals:17501", "--control", "0.0.0.0:17600", "--name", "node_a", "--uid", "000102030405060708090a0b", "--source-ready", "true"]
+    command: ["--bus", "bus:17500", "--signals", "signals:17501", "--world", "${ARC_SIM_WORLD:-}", "--clock", "${ARC_SIM_CLOCK:-world:17502}", "--control", "0.0.0.0:17600", "--name", "node_a", "--uid", "000102030405060708090a0b", "--source-ready", "true"]
     ports:
       - "127.0.0.1:${ARC_SIM_NODE_A_PORT:-17601}:17600"
     depends_on:
@@ -61,7 +81,7 @@ services:
       dockerfile: sim/Dockerfile.dst-host
       args:
         REV: rev2
-    command: ["--bus", "bus:17500", "--signals", "signals:17501", "--control", "0.0.0.0:17600", "--name", "node_b", "--uid", "101112131415161718191a1b", "--source-ready", "true"]
+    command: ["--bus", "bus:17500", "--signals", "signals:17501", "--clock", "${ARC_SIM_CLOCK:-world:17502}", "--control", "0.0.0.0:17600", "--name", "node_b", "--uid", "101112131415161718191a1b", "--source-ready", "true"]
     ports:
       - "127.0.0.1:${ARC_SIM_NODE_B_PORT:-17602}:17600"
     depends_on:
@@ -77,7 +97,7 @@ services:
       dockerfile: sim/Dockerfile.dst-host
       args:
         REV: rev2
-    command: ["--bus", "bus:17500", "--signals", "signals:17501", "--name", "node_collision", "--uid", "202122232425262728292a2b", "--network-id", "fa5138"]
+    command: ["--bus", "bus:17500", "--signals", "signals:17501", "--clock", "${ARC_SIM_CLOCK:-world:17502}", "--name", "node_collision", "--uid", "202122232425262728292a2b", "--network-id", "fa5138"]
     depends_on:
       bus:
         condition: service_healthy
