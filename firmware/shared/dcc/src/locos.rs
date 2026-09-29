@@ -1,6 +1,6 @@
-//! Bounded PSU throttle table and round-robin DCC packet selection.
+//! Bounded throttle table and round-robin DCC packet selection.
 
-use crate::dcc::Packet;
+use crate::Packet;
 use link::{ThrottleSet, ThrottleStatus};
 
 pub const CAPACITY: usize = 16;

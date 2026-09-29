@@ -5,11 +5,21 @@ use embassy_stm32::can::{Can, CanConfigurator, config::FrameTransmissionConfig};
 use embassy_stm32::peripherals::ADC1;
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, mutex::Mutex};
 use static_cell::StaticCell;
+#[cfg(feature = "rev1")]
+use core::sync::atomic::{AtomicU16, Ordering};
+
+#[cfg(feature = "rev1")]
+static ADC_COUNTS: [AtomicU16; 4] = [const { AtomicU16::new(0) }; 4];
+
+#[cfg(feature = "rev1")]
+pub fn adc_counts() -> [u16; 4] {
+    core::array::from_fn(|index| ADC_COUNTS[index].load(Ordering::Relaxed))
+}
 
 #[cfg(feature = "rev1")]
 mod rev1;
 #[cfg(feature = "rev1")]
-pub use rev1::{District, init};
+pub use rev1::{District, RgbLed, init};
 #[cfg(feature = "rev2")]
 mod rev2;
 #[cfg(feature = "rev2")]
@@ -30,6 +40,8 @@ fn configure_can(mut can: CanConfigurator<'static>) -> Can<'static> {
 pub struct Sense {
     adc: &'static SharedAdc,
     pin: AnyAdcChannel<'static, ADC1>,
+    #[cfg(feature = "rev1")]
+    index: usize,
 }
 
 impl Sense {
@@ -43,6 +55,8 @@ impl Sense {
             .lock()
             .await
             .blocking_read(&mut self.pin, sample_time);
+        #[cfg(feature = "rev1")]
+        ADC_COUNTS[self.index].store(raw, Ordering::Relaxed);
         // 90% of the hardware trip-reference divider, relative to the same
         // 3V3 ADC reference. Both current ranges trip at this voltage.
         // Rev1: 3.16k/30k; rev2: 9.76k/30k. Bench calibration is still needed.

@@ -6,6 +6,7 @@ compile_error!("host builds must select rev1 or rev2");
 compile_error!("rev1 and rev2 are mutually exclusive");
 
 pub mod district;
+pub mod console;
 pub mod network;
 
 #[cfg(all(
@@ -17,3 +18,6 @@ pub mod host;
 
 #[cfg(target_os = "none")]
 pub mod tasks;
+
+#[cfg(all(feature = "rev1", target_os = "none"))]
+pub mod sync;

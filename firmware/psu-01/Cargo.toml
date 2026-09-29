@@ -9,6 +9,7 @@ host = ["dep:serde_json"]
 
 [dependencies]
 link.workspace = true
+dcc = { workspace = true, features = ["stm32"] }
 serde_json = { version = "1", optional = true }
 
 [target.'cfg(target_os = "none")'.dependencies]
@@ -23,7 +24,8 @@ embedded-can = "0.4"
 panic-halt.workspace = true
 cortex-m-rt.workspace = true
 cortex-m.workspace = true
-stm32-metapac = { version = "21", features = ["pac", "stm32c092cb"] }
+embassy-boot-stm32.workspace = true
+embedded-storage = "0.3"
 
 [[bin]]
 name = "psu-01"

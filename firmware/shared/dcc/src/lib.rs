@@ -1,4 +1,15 @@
-//! NMRA DCC idle and 128-step speed packets shared by board and host.
+#![no_std]
+
+mod engine;
+pub mod locos;
+mod permission;
+pub use engine::Engine;
+pub use permission::Permission;
+
+#[cfg(all(feature = "stm32", target_os = "none"))]
+pub mod stm32;
+
+// NMRA DCC idle and 128-step speed packets shared by board and host.
 
 pub const ONE_HALF_US: u16 = 58;
 pub const ZERO_HALF_US: u16 = 100;

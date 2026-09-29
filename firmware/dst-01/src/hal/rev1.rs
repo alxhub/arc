@@ -5,7 +5,7 @@ use embassy_stm32::{
     adc::{Adc, AdcChannel},
     bind_interrupts,
     can::{self, Can, CanConfigurator},
-    gpio::{Level, Output, Speed},
+    gpio::{Level, Output, OutputOpenDrain, Speed},
     i2c::{self, I2c},
     mode::Blocking,
     peripherals,
@@ -58,6 +58,23 @@ pub struct District {
     expanders: &'static SharedExpanders,
     index: usize,
     applied: Option<Drive>,
+}
+
+pub struct RgbLed {
+    power: OutputOpenDrain<'static>,
+    red: OutputOpenDrain<'static>,
+    green: OutputOpenDrain<'static>,
+    blue: OutputOpenDrain<'static>,
+}
+
+impl RgbLed {
+    pub fn show(&mut self, red: bool, green: bool, blue: bool) {
+        // Rev1's 5 V common-anode LEDs need a low sink or a high-Z output.
+        self.red.set_level(if red { Level::Low } else { Level::High });
+        self.green.set_level(if green { Level::Low } else { Level::High });
+        self.blue.set_level(if blue { Level::Low } else { Level::High });
+        self.power.set_level(if red || green || blue { Level::Low } else { Level::High });
+    }
 }
 
 impl DistrictHal for District {
@@ -114,7 +131,15 @@ impl DistrictHal for District {
     }
 }
 
-pub fn init(p: Peripherals) -> ([District; 4], Can<'static>) {
+pub fn init(p: Peripherals) -> ([District; 4], Can<'static>, (embassy_stm32::Peri<'static, peripherals::USB>, embassy_stm32::Peri<'static, peripherals::PA12>, embassy_stm32::Peri<'static, peripherals::PA11>), embassy_stm32::Peri<'static, peripherals::FLASH>, RgbLed) {
+    let rgb = RgbLed {
+        // The separate green LED is on MCU pin 38 (PC6), also a sink.
+        power: OutputOpenDrain::new(p.PC6, Level::High, Speed::Low),
+        red: OutputOpenDrain::new(p.PC7, Level::High, Speed::Low),
+        green: OutputOpenDrain::new(p.PD9, Level::High, Speed::Low),
+        blue: OutputOpenDrain::new(p.PD8, Level::High, Speed::Low),
+    };
+    dst_01::sync::init(p.TIM14, p.PC12, p.PC13, p.PC2);
     let gates = [
         Output::new(p.PA6, Level::Low, Speed::Low),
         Output::new(p.PA7, Level::Low, Speed::Low),
@@ -141,12 +166,12 @@ pub fn init(p: Peripherals) -> ([District; 4], Can<'static>) {
         let (gate, pin) = parts.next().unwrap();
         District {
             gate,
-            sense: Sense { adc, pin },
+            sense: Sense { adc, pin, index },
             expanders,
             index,
             applied: None,
         }
     });
     let can = configure_can(CanConfigurator::new(p.FDCAN1, p.PB8, p.PB9, CanIrqs));
-    (districts, can)
+    (districts, can, (p.USB, p.PA12, p.PA11), p.FLASH, rgb)
 }

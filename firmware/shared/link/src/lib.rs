@@ -4,6 +4,8 @@
 
 #![no_std]
 
+pub mod update;
+
 pub const DISCOVERY_CLASS: u32 = 0x1f;
 pub const THROTTLE_CONTROL_CLASS: u32 = 0x08;
 pub const DISTRICT_CONTROL_CLASS: u32 = 0x10;
@@ -17,6 +19,81 @@ pub const PSU_STATUS_TYPE: u8 = 0x01;
 pub const THROTTLE_SET_TYPE: u8 = 0x01;
 pub const THROTTLE_STATUS_TYPE: u8 = 0x01;
 pub const MAX_NETWORK_ID: u32 = 0x00ff_ffff;
+
+pub const DCC_CONTROL_CLASS: u32 = 0x14;
+pub const DCC_STATUS_CLASS: u32 = 0x15;
+
+/// One-way grant, latched by the addressed source until its MCU restarts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DccGrant {
+    pub target: u32,
+}
+impl DccGrant {
+    pub fn can_id(sender: u32) -> Option<u32> {
+        (sender <= MAX_NETWORK_ID).then_some((DCC_CONTROL_CLASS << 24) | sender)
+    }
+    pub fn data(&self) -> Option<[u8; 5]> {
+        if self.target > MAX_NETWORK_ID {
+            return None;
+        }
+        let b = self.target.to_be_bytes();
+        Some([1, 1, b[1], b[2], b[3]])
+    }
+    pub fn decode(id: u32, data: &[u8]) -> Option<Self> {
+        if id >> 24 != DCC_CONTROL_CLASS || data.len() != 5 || data[..2] != [1, 1] {
+            return None;
+        }
+        Some(Self {
+            target: u32::from_be_bytes([0, data[2], data[3], data[4]]),
+        })
+    }
+}
+
+/// Kind: 0 = no transmitter, 1 = PSU, 2 = district transmitter.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DccStatus {
+    pub network_id: u32,
+    pub kind: u8,
+    pub permitted: bool,
+    pub transmitting: bool,
+}
+impl DccStatus {
+    pub fn can_id(&self) -> Option<u32> {
+        (self.network_id <= MAX_NETWORK_ID).then_some((DCC_STATUS_CLASS << 24) | self.network_id)
+    }
+    pub fn data(&self) -> Option<[u8; 4]> {
+        if self.network_id > MAX_NETWORK_ID
+            || self.kind > 2
+            || (self.kind == 0 && self.permitted)
+            || (self.transmitting && !self.permitted)
+        {
+            return None;
+        }
+        Some([
+            1,
+            1,
+            self.kind,
+            u8::from(self.permitted) | (u8::from(self.transmitting) << 1),
+        ])
+    }
+    pub fn decode(id: u32, data: &[u8]) -> Option<Self> {
+        if id >> 24 != DCC_STATUS_CLASS
+            || data.len() != 4
+            || data[..2] != [1, 1]
+            || data[3] & !3 != 0
+        {
+            return None;
+        }
+        let status = Self {
+            network_id: id & MAX_NETWORK_ID,
+            kind: data[2],
+            permitted: data[3] & 1 != 0,
+            transmitting: data[3] & 2 != 0,
+        };
+        status.data()?;
+        Some(status)
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ThrottleSet {
@@ -395,6 +472,30 @@ impl PsuStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dcc_grant_and_status_reject_malformed_frames() {
+        let grant = DccGrant { target: 0x123456 };
+        let id = DccGrant::can_id(1).unwrap();
+        assert_eq!(grant.data(), Some([1, 1, 0x12, 0x34, 0x56]));
+        assert_eq!(DccGrant::decode(id, &grant.data().unwrap()), Some(grant));
+        assert!(DccGrant::decode(id, &[1, 1, 0x12, 0x34]).is_none());
+        assert!(DccGrant::decode(id, &[2, 1, 0x12, 0x34, 0x56]).is_none());
+        assert!(DccGrant::decode(id, &[1, 2, 0x12, 0x34, 0x56]).is_none());
+        assert!(DccGrant::decode(0x13000001, &grant.data().unwrap()).is_none());
+        assert!(DccGrant { target: 0x1000000 }.data().is_none());
+        let status = DccStatus {
+            network_id: 0x123456,
+            kind: 2,
+            permitted: true,
+            transmitting: false,
+        };
+        let id = status.can_id().unwrap();
+        assert_eq!(DccStatus::decode(id, &status.data().unwrap()), Some(status));
+        for bytes in [[1, 1, 3, 0], [1, 1, 0, 1], [1, 1, 1, 2], [1, 1, 1, 4]] {
+            assert!(DccStatus::decode(id, &bytes).is_none());
+        }
+    }
 
     #[test]
     fn throttle_frames_round_trip_and_reject_invalid_fields() {

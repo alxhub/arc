@@ -27,6 +27,32 @@ Its reference is `pre-kdl-local`: the preserved firmware pin map is
 commit `b27db1e` describes rev1. The branch tip's hardware source already describes
 rev2, so it must not be used as the rev1 pin map.
 
+Rev1 also has a backbone DCC transmitter: TIM14 channel 1 on PC12 (AF2), with
+PC13 controlling driver-enable. Firmware uses the shared `dcc` crate for idle and
+128-step speed packets and the timer waveform, clocked from the board's 40 MHz
+oscillator. TIM3 remains reserved for Embassy time. The transmitter initializes
+disabled and accepts the same [CAN transmit grant](../../PROTOCOL.md#dcc-control-message-0x01-grant)
+as PSU. Permission persists until MCU restart. The active-low link-good input
+on PC2 gates actual transmission without clearing permission.
+Generation alone does not mark the received source ready or enable districts.
+Rev2 has no corresponding transmitter support.
+
+Rev1 routes USB D−/D+ to PA11/PA12. Firmware presents a CDC debug console for
+local DCC master and throttle commands, district state transitions, nominal
+current logging, reboot to the STM32 ROM USB DFU bootloader, and an `erase`
+command that clears the first flash page for bootloader replacement. See the
+[console command reference](../../firmware/README.md#rev1-usb-debug-console).
+
+Rev1's small green D4 uses `logic/brick/+`. Its RGB D3 uses the separate
+`indicator/lamp_rail/+`, supplied by U25 from `VPWR` and connected to D3 pad 4.
+During bring-up, board #1 ran the LED task and blinked D4 but did not light D3;
+D3 pad 4 measured about 4.5 V, so the lamp rail is reaching D3. The remaining
+checks are the PC7/PD9/PD8 sinks through R39/R40/R41 and D3's solder joints or
+orientation. On board #1, grounding the RGB resistor paths with a meter lit
+red and blue but not green. This suggests the red and blue dies and their common
+anode can conduct, while their normal GPIO sink path still needs checking;
+green may have a separate resistor, joint, or die fault.
+
 See [firmware build instructions](../../firmware/README.md).
 
 ## District tasks and recovery

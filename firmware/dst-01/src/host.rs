@@ -7,6 +7,7 @@ struct Drv8874 {
     drive: Drive,
     shorted: bool,
     load_ma: u16,
+    external_fault: bool,
 }
 
 impl Drv8874 {
@@ -18,13 +19,14 @@ impl Drv8874 {
             },
             shorted: false,
             load_ma: 150,
+            external_fault: false,
         }
     }
 
     fn current_ma(&self) -> u16 {
         if !self.drive.enabled {
             0
-        } else if self.shorted {
+        } else if self.shorted || self.external_fault {
             5_000
         } else {
             self.load_ma
@@ -32,7 +34,7 @@ impl Drv8874 {
     }
 
     fn fault(&self) -> bool {
-        self.drive.enabled && self.shorted
+        self.drive.enabled && (self.shorted || self.external_fault)
     }
 
     fn overcurrent(&self) -> bool {
@@ -216,6 +218,11 @@ impl Board {
 
     pub fn is_shorted(&self, index: usize) -> bool {
         self.drivers[index].shorted
+    }
+
+    pub fn set_world_sample(&mut self, index: usize, current_ma: u16, fault: bool) {
+        self.drivers[index].load_ma = current_ma;
+        self.drivers[index].external_fault = fault;
     }
 
     pub fn apply(&mut self, index: usize, drive: Drive) {

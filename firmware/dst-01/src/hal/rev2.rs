@@ -65,7 +65,7 @@ impl DistrictHal for District {
     }
 }
 
-pub fn init(p: Peripherals) -> ([District; 4], Can<'static>) {
+pub fn init(p: Peripherals) -> ([District; 4], Can<'static>, embassy_stm32::Peri<'static, peripherals::FLASH>) {
     // Acquire every gate and nSLEEP low before configuring the ADC.
     let gates = [
         Output::new(p.PA0, Level::Low, Speed::Low),
@@ -127,5 +127,5 @@ pub fn init(p: Peripherals) -> ([District; 4], Can<'static>) {
         }
     });
     let can = configure_can(CanConfigurator::new(p.FDCAN1, p.PD0, p.PD1, CanIrqs));
-    (districts, can)
+    (districts, can, p.FLASH)
 }

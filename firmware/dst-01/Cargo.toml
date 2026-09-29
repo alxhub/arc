@@ -8,9 +8,9 @@ publish.workspace = true
 # Require an explicit variant and revision; never silently choose a different MCU.
 default = []
 x4 = []
-rev1 = ["embassy-stm32/stm32g0b1re"]
+rev1 = ["embassy-stm32/stm32g0b1re", "dep:dcc", "dcc/stm32"]
 rev2 = ["embassy-stm32/stm32c092cb"]
-host = ["dep:serde_json", "dep:psu-01"]
+host = ["dep:serde_json", "dep:dcc"]
 
 [[bin]]
 name = "dst-01"
@@ -26,7 +26,7 @@ required-features = ["x4", "host"]
 
 [dependencies]
 link.workspace = true
-psu-01 = { path = "../psu-01", optional = true }
+dcc = { workspace = true, optional = true }
 serde_json = { version = "1", optional = true }
 
 [target.'cfg(target_os = "none")'.dependencies]
@@ -37,6 +37,12 @@ cortex-m-rt.workspace = true
 panic-halt.workspace = true
 embassy-time.workspace = true
 embassy-sync.workspace = true
+embassy-usb = "0.6"
+embassy-futures = "0.1"
+heapless = "0.9"
 static_cell.workspace = true
 portable-atomic.workspace = true
 embedded-can = "0.4"
+critical-section = "1"
+embassy-boot-stm32.workspace = true
+embedded-storage = "0.3"

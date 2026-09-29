@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["shared/link", "dst-01", "psu-01"]
+members = ["shared/link", "shared/dcc", "dst-01", "psu-01", "boot"]
 default-members = ["shared/link"]
 
 [workspace.package]
@@ -8,9 +8,11 @@ edition = "2024"
 publish = false
 
 [workspace.dependencies]
+dcc = { path = "shared/dcc" }
 link = { path = "shared/link" }
 embassy-executor = { version = "0.10", features = ["platform-cortex-m", "executor-thread"] }
-embassy-stm32 = { version = "0.6", default-features = false, features = ["rt", "memory-x"] }
+embassy-stm32 = { version = "0.6", default-features = false, features = ["rt"] }
+embassy-boot-stm32 = "0.8"
 cortex-m = { version = "0.7", features = ["critical-section-single-core"] }
 cortex-m-rt = "0.7"
 panic-halt = "1"

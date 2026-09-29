@@ -9,9 +9,15 @@ use psu_01::{
 use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::Arc;
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+#[path = "../../../shared/host_clock.rs"]
+mod host_clock;
+use host_clock::HostClock;
 
 struct Options {
     uid: [u8; 12],
@@ -19,6 +25,7 @@ struct Options {
     signals: String,
     control: String,
     name: String,
+    clock: String,
 }
 
 struct ControlRequest {
@@ -36,6 +43,7 @@ fn options() -> Result<Options, String> {
     let mut signals = "127.0.0.1:17501".to_string();
     let mut control = "127.0.0.1:17610".to_string();
     let mut name = "psu-01-host".to_string();
+    let mut clock = None;
     let args: Vec<_> = std::env::args().skip(1).collect();
     if args.len() % 2 != 0 {
         return Err("options require values".into());
@@ -58,6 +66,7 @@ fn options() -> Result<Options, String> {
             "--signals" => signals = pair[1].clone(),
             "--control" => control = pair[1].clone(),
             "--name" => name = pair[1].clone(),
+            "--clock" => clock = (!pair[1].is_empty()).then(|| pair[1].clone()),
             _ => return Err(format!("unknown option: {}", pair[0])),
         }
     }
@@ -67,6 +76,7 @@ fn options() -> Result<Options, String> {
         signals,
         control,
         name,
+        clock: clock.ok_or("--clock required")?,
     })
 }
 
@@ -122,7 +132,7 @@ fn signal_packet(packet: dcc::Packet) -> Value {
     json!({"kind": "dcc_packet", "bits": bits, "half_us": half_us})
 }
 
-fn can_receiver(stream: TcpStream) -> Receiver<(u32, Vec<u8>)> {
+fn can_receiver(stream: TcpStream, marker: Arc<AtomicU64>) -> Receiver<(u32, Vec<u8>)> {
     let (sender, receiver) = mpsc::channel();
     thread::spawn(move || {
         for line in BufReader::new(stream).lines() {
@@ -130,6 +140,12 @@ fn can_receiver(stream: TcpStream) -> Receiver<(u32, Vec<u8>)> {
             let Ok(frame) = serde_json::from_str::<Value>(&line) else {
                 continue;
             };
+            if frame["kind"].as_str() == Some("can_tick") {
+                if let Some(time) = frame["time_ms"].as_u64() {
+                    marker.store(time, Ordering::Release);
+                }
+                continue;
+            }
             let (Some(id), Some(data)) = (
                 frame.get("id").and_then(Value::as_u64),
                 frame.get("data").and_then(Value::as_str),
@@ -177,28 +193,41 @@ fn run() -> Result<(), String> {
     let presence = Presence::new(opts.uid);
     let mut can = TcpStream::connect(&opts.bus).map_err(|error| error.to_string())?;
     let mut signals = TcpStream::connect(&opts.signals).map_err(|error| error.to_string())?;
+    let mut signal_read = BufReader::new(signals.try_clone().map_err(|error| error.to_string())?);
     can.set_nodelay(true).map_err(|error| error.to_string())?;
-    let can_rx = can_receiver(can.try_clone().map_err(|error| error.to_string())?);
+    let can_marker = Arc::new(AtomicU64::new(0));
+    let can_rx = can_receiver(can.try_clone().map_err(|error| error.to_string())?, Arc::clone(&can_marker));
     signals
         .set_nodelay(true)
         .map_err(|error| error.to_string())?;
     let control = control_server(&opts.control)?;
+    let mut clock = HostClock::connect(&opts.clock, "psu")?;
     let mut power = Controller::new();
     let mut locos = Table::new();
+    let mut permission = dcc::Permission::new();
+    let mut last_dcc = None;
+    let mut next_dcc_ms = 0u64;
     let mut voltage_mv = 15_000u16;
     let mut current_ma = 250i16;
     let mut monitor_available = true;
-    let start = Instant::now();
-    let mut next_presence = start;
-    let mut next_status = start;
-    let mut next_packet = start;
+    let mut next_presence_ms = 0u64;
+    let mut next_status_ms = 0u64;
+    let mut next_packet_us = 0u64;
     let mut last_state = State::Off;
     let mut last_power = None;
     let packet_us = dcc::Packet::idle().duration_us();
     println!("{}: PSU-01 id={:06x}", opts.name, presence.network_id);
     loop {
+        let tick = clock.wait()?;
+        let elapsed = tick.unwrap_or_else(|| clock.now_ms());
+        if tick.is_some() && elapsed % 5 == 0 {
+            while can_marker.load(Ordering::Acquire) < elapsed {
+                thread::yield_now();
+            }
+        }
         while let Ok((id, data)) = can_rx.try_recv() {
-            if power.dcc_enabled()
+            permission.receive(id, &data, presence.network_id);
+            if power.state() == State::Online
                 && let Some(command) = ThrottleSet::decode(id, &data)
             {
                 match locos.apply(command, presence.network_id) {
@@ -206,15 +235,15 @@ fn run() -> Result<(), String> {
                         for index in 0..CAPACITY {
                             if let Some(status) = locos.status_due(
                                 index,
-                                start.elapsed().as_millis() as u64,
+                                elapsed,
                                 presence.network_id,
-                                power.dcc_enabled(),
+                                permission.transmitting(power.dcc_enabled()),
                             ) {
                                 send_status(&mut can, status)?;
                                 locos.status_sent(
                                     index,
                                     status.sequence,
-                                    start.elapsed().as_millis() as u64,
+                                    elapsed,
                                 );
                             }
                         }
@@ -228,10 +257,10 @@ fn run() -> Result<(), String> {
                 Some("status") => json!({
                     "ok": true, "network_id": format!("{:06x}", presence.network_id),
                     "state": format!("{:?}", power.state()).to_lowercase(),
-                    "link_enabled": power.link_enabled(), "dcc_enabled": power.dcc_enabled(),
+                    "link_enabled": power.link_enabled(), "dcc_enabled": permission.transmitting(power.dcc_enabled()),
                     "voltage_mv": voltage_mv, "current_ma": current_ma,
                     "monitor_available": monitor_available, "packet_us": packet_us,
-                    "loco_count": locos.len(),
+                    "loco_count": locos.len(), "dcc_permitted": permission.granted(),
                 }),
                 Some("set_power") => match (
                     request.command.get("voltage_mv").and_then(Value::as_u64),
@@ -255,8 +284,9 @@ fn run() -> Result<(), String> {
             };
             let _ = request.reply.send(result);
         }
-        let now = Instant::now();
-        let elapsed = start.elapsed().as_millis() as u64;
+        if tick.is_none() {
+            continue;
+        }
         if power.state() == State::Off {
             if monitor_available {
                 power.start(elapsed);
@@ -289,26 +319,37 @@ fn run() -> Result<(), String> {
             .map_err(|error| error.to_string())?;
             last_power = Some(output);
         }
-        if power.dcc_enabled() && now >= next_packet {
+        if permission.transmitting(power.dcc_enabled()) && elapsed * 1000 >= next_packet_us {
             let packet = locos.next_packet();
             writeln!(signals, "{}", signal_packet(packet)).map_err(|error| error.to_string())?;
-            next_packet = now + Duration::from_micros(packet.duration_us());
+            next_packet_us = elapsed * 1000 + packet.duration_us();
         }
         if power.state() == State::Online {
-            if now >= next_presence {
+            let status = link::DccStatus {
+                network_id: presence.network_id,
+                kind: 1,
+                permitted: permission.granted(),
+                transmitting: permission.transmitting(power.dcc_enabled()),
+            };
+            if last_dcc != Some(status) || elapsed >= next_dcc_ms {
+                writeln!(can, "{}", json!({"id": status.can_id().unwrap(), "data": hex_bytes(&status.data().unwrap())})).map_err(|error| error.to_string())?;
+                last_dcc = Some(status);
+                next_dcc_ms = elapsed + 1000;
+            }
+            if elapsed >= next_presence_ms {
                 writeln!(
                     can,
                     "{}",
                     json!({"id": presence.can_id(), "data": hex_bytes(&presence.data())})
                 )
                 .map_err(|error| error.to_string())?;
-                next_presence = now + Duration::from_secs(5);
+                next_presence_ms = elapsed + 5000;
             }
-            if power.state() != last_state || now >= next_status {
+            if power.state() != last_state || elapsed >= next_status_ms {
                 let status = PsuStatus {
                     network_id: presence.network_id,
                     state: state_code(power.state()),
-                    dcc_enabled: true,
+                    dcc_enabled: permission.transmitting(power.dcc_enabled()),
                     monitor_valid: true,
                     link_mv: voltage_mv,
                     link_ma: current_ma.max(0) as u16,
@@ -321,12 +362,17 @@ fn run() -> Result<(), String> {
                     "data": hex_bytes(&status.data().unwrap())})
                 )
                 .map_err(|error| error.to_string())?;
-                if now >= next_status {
-                    next_status = now + Duration::from_secs(1);
+                if elapsed >= next_status_ms {
+                    next_status_ms = elapsed + 1000;
                 }
             }
             for index in 0..CAPACITY {
-                if let Some(status) = locos.status_due(index, elapsed, presence.network_id, true) {
+                if let Some(status) = locos.status_due(
+                    index,
+                    elapsed,
+                    presence.network_id,
+                    permission.transmitting(power.dcc_enabled()),
+                ) {
                     send_status(&mut can, status)?;
                     locos.status_sent(index, status.sequence, elapsed);
                 }
@@ -336,7 +382,18 @@ fn run() -> Result<(), String> {
             println!("{}: {:?} -> {:?}", opts.name, last_state, power.state());
             last_state = power.state();
         }
-        thread::sleep(Duration::from_millis(1));
+        writeln!(signals, "{}", json!({"kind": "barrier", "time_ms": elapsed})).map_err(|error| error.to_string())?;
+        loop {
+            let mut line = String::new();
+            if signal_read.read_line(&mut line).map_err(|error| error.to_string())? == 0 {
+                return Err("signal bus connection closed".into());
+            }
+            let value: Value = serde_json::from_str(&line).map_err(|error| error.to_string())?;
+            if value["kind"].as_str() == Some("barrier_ack") && value["time_ms"].as_u64() == Some(elapsed) {
+                break;
+            }
+        }
+        clock.ack()?;
     }
 }
 

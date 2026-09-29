@@ -9,21 +9,26 @@ use dst_01::district::{Config, Controller, Drive, Mode, State};
 use dst_01::host::Board;
 use dst_01::network::{self, StatusCadence};
 use link::{MAX_NETWORK_ID, Presence};
-use psu_01::dcc;
 use serde_json::{Value, json};
 use std::collections::HashSet;
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
+#[path = "../../../shared/host_clock.rs"]
+mod host_clock;
+use host_clock::HostClock;
+
 struct Options {
     uid: [u8; 12],
     bus: String,
     signals: String,
+    world: Option<String>,
+    clock: String,
     name: String,
     source_ready: bool,
     fault_mask: u8,
@@ -39,8 +44,9 @@ struct ControlRequest {
 #[derive(Default)]
 struct LinkSignal {
     power: bool,
-    last_packet: Option<Instant>,
     packets: u64,
+    barrier_ms: u64,
+    own_barrier_ms: u64,
 }
 
 fn valid_dcc_packet(value: &Value) -> bool {
@@ -66,7 +72,7 @@ fn valid_dcc_packet(value: &Value) -> bool {
         })
 }
 
-fn observe_signals(reader: TcpStream, shared: Arc<Mutex<LinkSignal>>) {
+fn observe_signals(reader: TcpStream, shared: Arc<Mutex<LinkSignal>>, name: String) {
     for line in BufReader::new(reader).lines() {
         let Ok(line) = line else { break };
         let Ok(value) = serde_json::from_str::<Value>(&line) else {
@@ -77,15 +83,19 @@ fn observe_signals(reader: TcpStream, shared: Arc<Mutex<LinkSignal>>) {
             Some("power") => {
                 if let Some(enabled) = value.get("enabled").and_then(Value::as_bool) {
                     signal.power = enabled;
-                    if !enabled {
-                        signal.last_packet = None;
-                    }
                 }
             }
             Some("dcc_packet") if valid_dcc_packet(&value) => {
                 if signal.power {
-                    signal.last_packet = Some(Instant::now());
                     signal.packets += 1;
+                }
+            }
+            Some("barrier") => {
+                if let Some(now) = value.get("time_ms").and_then(Value::as_u64) {
+                    signal.barrier_ms = signal.barrier_ms.max(now);
+                    if value.get("source").and_then(Value::as_str) == Some(name.as_str()) {
+                        signal.own_barrier_ms = signal.own_barrier_ms.max(now);
+                    }
                 }
             }
             _ => {}
@@ -93,7 +103,70 @@ fn observe_signals(reader: TcpStream, shared: Arc<Mutex<LinkSignal>>) {
     }
     let mut signal = shared.lock().expect("signal lock");
     signal.power = false;
-    signal.last_packet = None;
+}
+
+/// Same boot-lifetime grant as the embedded transmitter.
+#[derive(Default)]
+struct SyncSource {
+    permission: dcc::Permission,
+    next_packet_us: Option<u64>,
+    #[cfg(feature = "rev1")]
+    table: dcc::locos::Table,
+}
+
+impl SyncSource {
+    fn receive(&mut self, id: u32, data: &[u8], own_id: u32) {
+        #[cfg(feature = "rev1")]
+        {
+            self.permission.receive(id, data, own_id);
+            if let Some(command) = link::ThrottleSet::decode(id, data) {
+                self.table.apply(command, own_id);
+            }
+        }
+        #[cfg(feature = "rev2")]
+        let _ = (id, data, own_id);
+    }
+    fn status(&self, own_id: u32, power: bool) -> link::DccStatus {
+        link::DccStatus {
+            network_id: own_id,
+            kind: if cfg!(feature = "rev1") { 2 } else { 0 },
+            permitted: self.permission.granted(),
+            transmitting: self.permission.transmitting(power),
+        }
+    }
+
+    fn tick(&mut self, power: bool, now_us: u64) -> Option<dcc::Packet> {
+        #[cfg(feature = "rev2")]
+        let _ = now_us;
+        if !power {
+            self.next_packet_us = None;
+        }
+        #[cfg(feature = "rev1")]
+        if self.permission.transmitting(power)
+            && self.next_packet_us.is_none_or(|due| now_us >= due)
+        {
+            let packet = self.table.next_packet();
+            self.next_packet_us = Some(now_us + packet.duration_us());
+            return Some(packet);
+        }
+        None
+    }
+}
+
+fn signal_packet(packet: dcc::Packet) -> Value {
+    let bits: String = (0..packet.len_bits())
+        .map(|i| if packet.bit(i) { '1' } else { '0' })
+        .collect();
+    let halves: Vec<_> = (0..packet.len_bits())
+        .map(|i| {
+            if packet.bit(i) {
+                dcc::ONE_HALF_US
+            } else {
+                dcc::ZERO_HALF_US
+            }
+        })
+        .collect();
+    json!({"kind": "dcc_packet", "bits": bits, "half_us": halves})
 }
 
 #[derive(Default)]
@@ -153,16 +226,99 @@ fn parse_hex_bytes(value: &str) -> Result<Vec<u8>, String> {
         .collect()
 }
 
+struct WorldClient {
+    write: TcpStream,
+    read: BufReader<TcpStream>,
+}
+
+impl WorldClient {
+    fn connect(address: &str) -> Result<Self, String> {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            match TcpStream::connect(address) {
+                Ok(write) => {
+                    write.set_nodelay(true).map_err(|error| error.to_string())?;
+                    write
+                        .set_read_timeout(Some(Duration::from_secs(2)))
+                        .map_err(|error| error.to_string())?;
+                    let read =
+                        BufReader::new(write.try_clone().map_err(|error| error.to_string())?);
+                    return Ok(Self { write, read });
+                }
+                Err(error) if Instant::now() >= deadline => {
+                    return Err(format!("world connection: {error}"));
+                }
+                Err(_) => thread::sleep(Duration::from_millis(50)),
+            }
+        }
+    }
+
+    fn sample_all(&mut self, board: &str, drives: [Drive; 4]) -> Result<[(u16, bool); 4], String> {
+        let outputs: Vec<_> = drives
+            .iter()
+            .map(|drive| {
+                json!({
+                    "enabled": drive.enabled, "mode": mode_name(drive.mode), "phase": 0
+                })
+            })
+            .collect();
+        writeln!(
+            self.write,
+            "{}",
+            json!({"op": "sample_all", "board": board, "outputs": outputs})
+        )
+        .map_err(|error| error.to_string())?;
+        let mut line = String::new();
+        if self
+            .read
+            .read_line(&mut line)
+            .map_err(|error| error.to_string())?
+            == 0
+        {
+            return Err("world connection closed".into());
+        }
+        let response: Value = serde_json::from_str(&line).map_err(|error| error.to_string())?;
+        if response.get("ok").and_then(Value::as_bool) != Some(true) {
+            return Err(format!("world sample failed: {response}"));
+        }
+        let samples = response
+            .get("samples")
+            .and_then(Value::as_array)
+            .filter(|samples| samples.len() == 4)
+            .ok_or("invalid world samples")?;
+        let parsed = samples
+            .iter()
+            .map(|sample| {
+                let current = sample
+                    .get("current_ma")
+                    .and_then(Value::as_u64)
+                    .and_then(|value| u16::try_from(value).ok())
+                    .ok_or("invalid world current")?;
+                let fault = sample
+                    .get("fault")
+                    .and_then(Value::as_bool)
+                    .ok_or("invalid world fault")?;
+                Ok((current, fault))
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        parsed
+            .try_into()
+            .map_err(|_| "invalid world sample count".into())
+    }
+}
+
 fn options() -> Result<Options, String> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     if args.len() < 2 || args.len() % 2 != 0 {
-        return Err("usage: dst-01-host --uid <24-hex> [--bus host:port] [--control host:port] [--name name] [--source-ready true|false] [--fault-mask 0..15] [--network-id 6-hex]".into());
+        return Err("usage: dst-01-host --uid <24-hex> --clock host:port [--bus host:port] [--signals host:port] [--world host:port] [--control host:port] [--name name] [--source-ready true|false] [--fault-mask 0..15] [--network-id 6-hex]".into());
     }
     let mut uid = None;
     let mut bus = "127.0.0.1:17500".to_string();
     let mut signals = "127.0.0.1:17501".to_string();
     let mut name = "dst-01-host".to_string();
     let mut source_ready = false;
+    let mut world = None;
+    let mut clock = None;
     let mut fault_mask = 0;
     let mut network_id = None;
     let mut control = None;
@@ -174,6 +330,14 @@ fn options() -> Result<Options, String> {
             }
             "--bus" => bus = pair[1].clone(),
             "--signals" => signals = pair[1].clone(),
+            "--world" => {
+                world = if pair[1].is_empty() {
+                    None
+                } else {
+                    Some(pair[1].clone())
+                }
+            }
+            "--clock" => clock = (!pair[1].is_empty()).then(|| pair[1].clone()),
             "--control" => control = Some(pair[1].clone()),
             "--name" => name = pair[1].clone(),
             "--source-ready" => {
@@ -201,6 +365,8 @@ fn options() -> Result<Options, String> {
         uid: uid.ok_or("--uid is required")?,
         bus,
         signals,
+        world,
+        clock: clock.ok_or("--clock is required")?,
         name,
         source_ready,
         fault_mask,
@@ -215,6 +381,8 @@ fn observe_peer(
     reader: TcpStream,
     peers: Arc<AtomicUsize>,
     configs: Sender<(usize, Config)>,
+    source: Sender<(u32, Vec<u8>)>,
+    marker: Arc<AtomicU64>,
 ) {
     let mut seen = HashSet::new();
     for line in BufReader::new(reader).lines() {
@@ -222,6 +390,12 @@ fn observe_peer(
         let Ok(value) = serde_json::from_str::<Value>(&line) else {
             continue;
         };
+        if value["kind"].as_str() == Some("can_tick") {
+            if let Some(now) = value["time_ms"].as_u64() {
+                marker.store(now, Ordering::Release);
+            }
+            continue;
+        }
         let Some(id) = value.get("id").and_then(Value::as_u64) else {
             continue;
         };
@@ -231,6 +405,14 @@ fn observe_peer(
         let Ok(bytes) = parse_hex_bytes(data) else {
             continue;
         };
+        if id > 0x1fff_ffff {
+            continue;
+        }
+        if link::DccGrant::decode(id as u32, &bytes).is_some()
+            || link::ThrottleSet::decode(id as u32, &bytes).is_some()
+        {
+            let _ = source.send((id as u32, bytes.clone()));
+        }
         if let Some(config) = network::decode_command(id as u32, &bytes, own.network_id) {
             let _ = configs.send(config);
             continue;
@@ -318,6 +500,7 @@ fn respond_to_control(
     board: &mut Board,
     districts: &[Controller; 4],
     source_ready: &mut bool,
+    sync: &mut SyncSource,
     link_power: bool,
     dcc_packets: u64,
     dcc_valid: bool,
@@ -338,6 +521,9 @@ fn respond_to_control(
             "source_ready": *source_ready && link_power && dcc_valid,
             "link_power": link_power,
             "dcc_packets": dcc_packets,
+            "sync_capable": cfg!(feature = "rev1"),
+            "sync_enabled": sync.permission.transmitting(link_power),
+            "sync_permitted": sync.permission.granted(),
             "districts": (0..4).map(|index| {
                 let status = districts[index].status();
                 json!({
@@ -392,15 +578,27 @@ fn run() -> Result<(), String> {
         .map_err(|error| error.to_string())?;
     let receive = stream.try_clone().map_err(|error| error.to_string())?;
     let signal_stream = TcpStream::connect(&opts.signals).map_err(|error| error.to_string())?;
+    signal_stream.set_nodelay(true).map_err(|error| error.to_string())?;
+    let mut signal_tx = signal_stream
+        .try_clone()
+        .map_err(|error| error.to_string())?;
     let link_signal = Arc::new(Mutex::new(LinkSignal::default()));
     let signal_shared = Arc::clone(&link_signal);
-    thread::spawn(move || observe_signals(signal_stream, signal_shared));
+    let signal_name = opts.name.clone();
+    thread::spawn(move || observe_signals(signal_stream, signal_shared, signal_name));
     let peers = Arc::new(AtomicUsize::new(0));
     let name = opts.name.clone();
     let peer_counter = Arc::clone(&peers);
     let (config_tx, config_rx) = mpsc::channel();
-    thread::spawn(move || observe_peer(&name, presence, receive, peer_counter, config_tx));
+    let (source_tx, source_rx) = mpsc::channel();
+    let can_marker = Arc::new(AtomicU64::new(0));
+    let peer_marker = Arc::clone(&can_marker);
+    thread::spawn(move || {
+        observe_peer(&name, presence, receive, peer_counter, config_tx, source_tx, peer_marker)
+    });
     let control = opts.control.as_deref().map(control_server).transpose()?;
+    let clock_name = opts.name.as_str();
+    let mut clock = HostClock::connect(&opts.clock, clock_name)?;
 
     let revision = if cfg!(feature = "rev1") {
         "rev1"
@@ -416,6 +614,11 @@ fn run() -> Result<(), String> {
 
     let mut districts: [Controller; 4] = std::array::from_fn(|_| Controller::new());
     let mut board = Board::new();
+    let mut world = opts
+        .world
+        .as_deref()
+        .map(WorldClient::connect)
+        .transpose()?;
     for index in 0..4 {
         board.inject_short(index, opts.fault_mask & (1 << index) != 0);
     }
@@ -424,16 +627,42 @@ fn run() -> Result<(), String> {
     let mut trips = [0u32; 4];
     let mut current_windows: [CurrentWindow; 4] = std::array::from_fn(|_| CurrentWindow::default());
     let mut source_ready = opts.source_ready;
+    let mut sync = SyncSource::default();
+    let mut last_dcc = None;
+    let mut next_dcc_ms = 0u64;
     let mut applied = [Drive {
         mode: Mode::Disabled,
         enabled: false,
     }; 4];
-    let start = Instant::now();
-    let mut next_presence = Instant::now();
+    let mut next_presence_ms = 0u64;
+    let mut last_packet_count = 0u64;
+    let mut last_packet_ms = None;
     loop {
+        let tick = clock.wait()?;
+        let elapsed = tick.unwrap_or_else(|| clock.now_ms());
+        if tick.is_some() {
+            if elapsed % 5 == 0 {
+                while can_marker.load(Ordering::Acquire) < elapsed {
+                    thread::yield_now();
+                }
+            }
+            while link_signal.lock().expect("signal lock").barrier_ms < elapsed {
+                thread::yield_now();
+            }
+        }
+        {
+            let signal = link_signal.lock().expect("signal lock");
+            if signal.packets != last_packet_count {
+                last_packet_count = signal.packets;
+                last_packet_ms = Some(elapsed);
+            }
+            if !signal.power {
+                last_packet_ms = None;
+            }
+        }
         while let Ok((index, config)) = config_rx.try_recv() {
             if districts[index]
-                .configure(config, start.elapsed().as_millis() as u64)
+                .configure(config, elapsed)
                 .is_err()
             {
                 eprintln!(
@@ -442,17 +671,52 @@ fn run() -> Result<(), String> {
                 );
             }
         }
+        while let Ok((id, data)) = source_rx.try_recv() {
+            sync.receive(id, &data, presence.network_id);
+        }
+        if tick.is_none() {
+            if let Some(control) = &control {
+                while let Ok(request) = control.try_recv() {
+                    let signal = link_signal.lock().expect("signal lock");
+                    let dcc_valid = last_packet_ms.is_some_and(|last| elapsed.saturating_sub(last) < 30);
+                    respond_to_control(request, &mut board, &districts, &mut source_ready, &mut sync,
+                        signal.power, signal.packets, dcc_valid, &trips, peers.load(Ordering::Relaxed),
+                        &opts.name, revision, presence.network_id);
+                }
+            }
+            continue;
+        }
+        let power = link_signal.lock().expect("signal lock").power;
+        if let Some(packet) = sync.tick(power, elapsed * 1000) {
+            writeln!(signal_tx, "{}", signal_packet(packet)).map_err(|error| error.to_string())?;
+        }
+        let dcc_status = sync.status(presence.network_id, power);
+        if last_dcc != Some(dcc_status) || elapsed >= next_dcc_ms {
+            writeln!(stream, "{}", json!({"id": dcc_status.can_id().unwrap(), "data": hex_bytes(&dcc_status.data().unwrap())})).map_err(|error| error.to_string())?;
+            last_dcc = Some(dcc_status);
+            next_dcc_ms = elapsed + 1000;
+        }
+        #[cfg(feature = "rev1")]
+        for index in 0..dcc::locos::CAPACITY {
+            let now_ms = elapsed;
+            if let Some(status) =
+                sync.table
+                    .status_due(index, now_ms, presence.network_id, dcc_status.transmitting)
+            {
+                writeln!(stream, "{}", json!({"id": status.can_id().unwrap(), "data": hex_bytes(&status.data().unwrap())})).map_err(|error| error.to_string())?;
+                sync.table.status_sent(index, status.sequence, now_ms);
+            }
+        }
         if let Some(control) = &control {
             while let Ok(request) = control.try_recv() {
                 let signal = link_signal.lock().expect("signal lock");
-                let dcc_valid = signal
-                    .last_packet
-                    .is_some_and(|last| last.elapsed() < Duration::from_millis(30));
+                let dcc_valid = last_packet_ms.is_some_and(|last| elapsed.saturating_sub(last) < 30);
                 respond_to_control(
                     request,
                     &mut board,
                     &districts,
                     &mut source_ready,
+                    &mut sync,
                     signal.power,
                     signal.packets,
                     dcc_valid,
@@ -464,24 +728,33 @@ fn run() -> Result<(), String> {
                 );
             }
         }
-        let now = Instant::now();
-        if now >= next_presence {
+        if elapsed >= next_presence_ms {
             let frame = json!({"id": presence.can_id(), "data": hex_bytes(&presence.data())});
             writeln!(stream, "{frame}").map_err(|error| error.to_string())?;
-            next_presence = now + Duration::from_secs(5);
+            next_presence_ms = elapsed + 5000;
         }
-        let elapsed = start.elapsed().as_millis() as u64;
         let signal = link_signal.lock().expect("signal lock");
+        let dcc_valid = last_packet_ms.is_some_and(|last| elapsed.saturating_sub(last) < 30);
         let source_ready = source_ready
             && signal.power
-            && signal
-                .last_packet
-                .is_some_and(|last| last.elapsed() < Duration::from_millis(30));
+            && dcc_valid;
         drop(signal);
-        for (index, district) in districts.iter_mut().enumerate() {
-            if !source_ready {
+        if !source_ready {
+            for index in 0..4 {
                 board.inhibit(index);
             }
+        }
+        if let Some(world) = &mut world {
+            let effective = std::array::from_fn(|index| Drive {
+                mode: applied[index].mode,
+                enabled: board.gate(index),
+            });
+            let samples = world.sample_all(&format!("{:06x}", presence.network_id), effective)?;
+            for (index, (current_ma, fault)) in samples.into_iter().enumerate() {
+                board.set_world_sample(index, current_ma, fault);
+            }
+        }
+        for (index, district) in districts.iter_mut().enumerate() {
             current_windows[index].sample(elapsed, board.current_ma(index));
             let sample = board.sample(index);
             let before = district.status().state;
@@ -524,7 +797,11 @@ fn run() -> Result<(), String> {
                 cadence[index].sent(elapsed, status);
             }
         }
-        thread::sleep(Duration::from_millis(1));
+        writeln!(signal_tx, "{}", json!({"kind": "barrier", "time_ms": elapsed, "source": opts.name})).map_err(|error| error.to_string())?;
+        while link_signal.lock().expect("signal lock").own_barrier_ms < elapsed {
+            thread::yield_now();
+        }
+        clock.ack()?;
     }
 }
 
