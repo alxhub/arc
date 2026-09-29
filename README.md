@@ -107,26 +107,37 @@ The Kato turntable controller is another example of this intended behavior. As t
 ## Firmware
 
 The [Rust firmware workspace](firmware/README.md) uses Embassy. It contains the
-shared ARC-Link protocol crate at `firmware/shared/link`, the `dst-01` board
+shared ARC-Link protocol crate at `firmware/shared/link`, the shared DCC packet
+and waveform generator at `firmware/shared/dcc`, the `dst-01` board
 crate for x4 rev1/rev2, and the `psu-01` board crate for link power, a
-bounded locomotive table, and DCC idle and speed packets.
+bounded locomotive table, and DCC idle and speed packets. DST rev1 includes the
+same transmitter, disabled at boot. PSU and DST rev1 both require
+[CAN transmit permission](PROTOCOL.md#dcc-control-message-0x01-grant), retained until
+the source restarts. Once the expected layout is good, layoutd selects one master
+and grants permission. PSU link power and CAN discovery start independently of DCC.
+All current firmware targets also use an Embassy bootloader and a shared
+[CAN FD update protocol](PROTOCOL.md#firmware-update-over-can-fd) for staged
+application updates.
 
 ## Layout software
 
 The first host-side service is [layoutd](services/layoutd/README.md). It owns
 retained MQTT facts about track nodes, derives and checks the layout graph
-against observed CAN node identities, and publishes overall status. Its CAN
-interface has a file-based simulator for
-development and tests.
+against observed CAN node identities, and publishes overall status. Its CAN interface supports file snapshots and the virtual CAN bus for development
+and tests. It selects the DCC master only after all expected hardware is accounted for.
 
 The initial [dispatchd](services/dispatchd/README.md) bridge reads district
 status and PSU throttle status from the virtual CAN bus, publishes MQTT state
 under `/<layout>/district/` and `/<layout>/loco/`, and converts non-retained
-locomotive commands to CAN throttle-set frames. The PSU locomotive table and
-authority exchange are still to be implemented.
+locomotive commands to CAN throttle-set frames. PSU and DST rev1 share the
+locomotive table and require the transmit grant assigned by layoutd.
 
 The [virtual CAN lab](sim/README.md) builds the DST-01x4 firmware crate as host
 binaries for both board revisions and connects them over a simulated CAN bus.
+Its world clock starts paused; tests advance it explicitly so CAN arbitration,
+PSU and district timers, DCC delivery, track motion, and current sampling share
+the same time. The physical track fixture is separate from layoutd's configured
+layout, allowing tests to exercise unknown or incorrect track plans.
 
 ## Working with the designs
 
